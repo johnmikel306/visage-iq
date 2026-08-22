@@ -5,7 +5,7 @@ import AnalyticsPage from "./components/AnalyticsPage";
 import SearchPage from "./components/SearchPage";
 import SettingsPage from "./components/SettingsPage";
 import StudentsPage from "./components/StudentsPage";
-import { Icon, MivaMark } from "./ds";
+import { Icon, VqLockup, VqMark } from "./ds";
 import { formatNumber, relativeTime } from "./format";
 
 export type Tab = "search" | "students" | "analytics" | "settings";
@@ -157,11 +157,8 @@ export default function App() {
     <div className={"app" + (collapsed ? " collapsed" : "")}>
       <aside className="side">
         <div className="side-top">
-          <MivaMark height={30} />
-          <div className="hide-collapsed" style={{ minWidth: 0 }}>
-            <div className="side-title">VisageIQ</div>
-            <div className="side-sub">Face match operations</div>
-          </div>
+          {/* Logo rules: 32px mark alone when the rail is collapsed, lockup expanded. */}
+          {collapsed ? <VqMark size={32} onDark /> : <VqLockup mark={28} type={19} onDark />}
         </div>
         <nav className="nav">
           {NAV.map(([key, label, icon]) => (

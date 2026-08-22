@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ChangeEvent, type DragEvent, type KeyboardEvent } from "react";
 import type { Cfg } from "../App";
 import { apiRequest, apiUrl, errorMessage, type MatchResponse } from "../api";
-import { Button, Icon, Panel, ScoreBar, Verdict, verdictOf } from "../ds";
+import { Button, Icon, Panel, ScoreBar, SEARCH_LOADER_MSGS, Verdict, verdictOf, VqLoader } from "../ds";
 import { formatNumber } from "../format";
 
 const FETCH_TOP_K = 20;
@@ -332,7 +332,9 @@ export default function SearchPage({ cfg }: { cfg: Cfg }) {
             meta={matchData ? `Top ${cfg.topK} of ${formatNumber(matchData.enrolled_count)} searched` : undefined}
             pad={false}
           >
-            {!matchData ? (
+            {isMatching ? (
+              <VqLoader messages={SEARCH_LOADER_MSGS} />
+            ) : !matchData ? (
               <div className="empty">
                 <Icon name="search" size={28} color="var(--txt-3)" />
                 <div style={{ fontSize: "var(--text-body)", color: "var(--txt-2)" }}>

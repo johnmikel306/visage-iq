@@ -1,6 +1,6 @@
 /* Miva design-system primitives + VisageIQ shared components, ported from the
    Claude Design project (miva-design-system _ds_bundle.js + visageiq/shared.jsx). */
-import { type CSSProperties, type ReactNode, useId, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useId, useState } from "react";
 
 /* ── Icon ────────────────────────────────────────────────── */
 const GLYPHS: Record<string, ReactNode> = {
@@ -113,24 +113,122 @@ export function Icon({
   );
 }
 
-/* ── Miva mark (official brand mark — never redraw... this is the DS's own SVG, inlined) ── */
-export function MivaMark({ height = 30 }: { height?: number }) {
+/* ── VisageIQ brand (from the "VisageIQ logo" design page) ──
+   Lens + V chevron + handle on a 48-unit grid. Slate carries structure,
+   signal orange marks the chevron; on dark surfaces both lighten. Below
+   20px the strokes thicken and the handle shortens so the aperture stays open. */
+const VQ = {
+  struct: "#1E2733",
+  structOnDark: "#FFFFFF",
+  accent: "#C4602E",
+  accentOnDark: "#E0854F",
+};
+
+export function VqMark({ size = 26, onDark }: { size?: number; onDark?: boolean }) {
+  const small = size < 20;
+  // onDark unspecified → follow the theme (safe: theme changes re-render the tree).
+  const dark = onDark ?? document.documentElement.getAttribute("data-theme") === "dark";
+  const struct = dark ? VQ.structOnDark : VQ.struct;
+  const accent = dark ? VQ.accentOnDark : VQ.accent;
   return (
     <svg
-      width={(97 / 93) * height}
-      height={height}
-      viewBox="0 0 97 93"
+      width={size}
+      height={size}
+      viewBox="0 0 48 48"
       fill="none"
-      aria-label="Miva Open University"
-      style={{ display: "block", flexShrink: 0 }}
+      aria-hidden="true"
+      style={{ display: "block", flexShrink: 0, overflow: "visible" }}
     >
-      <path d="M0 7.46362V92.9999L22.2021 47.9098L0 7.46362Z" fill="white" />
-      <path d="M1.26611 3.97998L48.7542 82.7015V49.5485L1.26611 3.97998Z" fill="#E43B31" />
-      <path d="M3.0025 0L48.7573 42.5932V24.858L3.0025 0Z" fill="#B79A7F" />
-      <path d="M97.0683 7.46362V92.9999L74.8662 47.9098L97.0683 7.46362Z" fill="white" />
-      <path d="M95.8173 3.97998L48.3141 82.7015V49.5485L95.8173 3.97998Z" fill="#E43B31" />
-      <path d="M94.084 0L48.3171 42.5932V24.858L94.084 0Z" fill="white" />
+      <circle cx="21" cy="21" r="14" stroke={struct} strokeWidth={small ? 4.2 : 3.4} />
+      <path
+        d="M14 14 L21 30 L28 14"
+        stroke={accent}
+        strokeWidth={small ? 4.2 : 3.4}
+        strokeLinecap="round"
+      />
+      <path
+        d={small ? "M32 32 L40 40" : "M31 31 L42 42"}
+        stroke={struct}
+        strokeWidth={small ? 5 : 4.4}
+        strokeLinecap="round"
+      />
     </svg>
+  );
+}
+
+export function VqLockup({
+  mark = 26,
+  type = 16,
+  onDark,
+}: {
+  mark?: number;
+  type?: number;
+  onDark?: boolean;
+}) {
+  const dark = onDark ?? document.documentElement.getAttribute("data-theme") === "dark";
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: "0.42em", lineHeight: 1 }}>
+      <VqMark size={mark} onDark={dark} />
+      <span
+        style={{
+          fontFamily: "'Space Grotesk', var(--font-body)",
+          fontWeight: 500,
+          fontSize: type,
+          letterSpacing: "-0.028em",
+          color: dark ? "#fff" : VQ.struct,
+          whiteSpace: "nowrap",
+        }}
+      >
+        Visage
+        <b style={{ fontWeight: 700, color: dark ? VQ.accentOnDark : VQ.accent }}>IQ</b>
+      </span>
+    </span>
+  );
+}
+
+/* ── Loader (design "Loader options" — Option 8: dots + rotating copy) ── */
+export const SEARCH_LOADER_MSGS = [
+  "Detecting faces in the probe image…",
+  "Computing the 512-dimension embedding…",
+  "Sweeping the enrolment index…",
+  "Measuring cosine distance across the shortlist…",
+  "Discarding low-confidence neighbours…",
+  "Re-ranking the shortlist…",
+  "Resolving near-identical twins…",
+  "Applying your review thresholds…",
+  "Assembling the verdicts…",
+];
+
+export function VqLoader({ messages, sub, lockup = false }: { messages: string[]; sub?: string; lockup?: boolean }) {
+  const [index, setIndex] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const msg = setInterval(() => setIndex((i) => (i + 1) % messages.length), 1300);
+    const tick = setInterval(() => setElapsed((s) => s + 0.1), 100);
+    return () => {
+      clearInterval(msg);
+      clearInterval(tick);
+    };
+  }, [messages.length]);
+  return (
+    <div className="vq-load">
+      {lockup && (
+        <div style={{ marginBottom: "var(--s-2)" }}>
+          <VqLockup mark={24} type={15} />
+        </div>
+      )}
+      <div className="vq-dots">
+        <i></i>
+        <i></i>
+        <i></i>
+        <i></i>
+      </div>
+      <div className="msg">{messages[index]}</div>
+      <div className="mono">
+        {sub ? sub + " · " : ""}
+        {elapsed.toFixed(1)}s elapsed
+      </div>
+    </div>
   );
 }
 

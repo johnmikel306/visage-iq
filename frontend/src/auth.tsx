@@ -1,9 +1,17 @@
 /* All Clerk-touching code lives here. Without VITE_CLERK_PUBLISHABLE_KEY the
    app renders open (matches the backend's empty-CLERK_SECRET_KEY dev mode). */
-import { ClerkProvider, SignIn, SignedIn, SignedOut, useAuth, useUser } from "@clerk/clerk-react";
+import { ClerkLoading, ClerkProvider, SignIn, SignedIn, SignedOut, useAuth, useUser } from "@clerk/clerk-react";
 import { createContext, useContext, useEffect, useRef, type ReactNode } from "react";
 import { setAuthTokenGetter } from "./api";
-import { MivaMark } from "./ds";
+import { VqLoader, VqLockup, VqMark } from "./ds";
+
+const HANDOFF_MSGS = [
+  "Loading the enrolment index…",
+  "Checking Drive sync state…",
+  "Warming the vector cache…",
+  "Reading your review thresholds…",
+  "Preparing the workspace…",
+];
 
 export const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
 
@@ -37,23 +45,40 @@ export function AuthShell({ children }: { children: ReactNode }) {
   if (!PUBLISHABLE_KEY) return <>{children}</>;
   return (
     <ClerkProvider publishableKey={PUBLISHABLE_KEY} afterSignOutUrl="/">
+      <ClerkLoading>
+        {/* Handoff loader (Auth screens, screen 9) — bridges page load and session resolution. */}
+        <div style={{ height: "100%", display: "grid", placeItems: "center", background: "var(--surface-2)" }}>
+          <VqLoader lockup messages={HANDOFF_MSGS} />
+        </div>
+      </ClerkLoading>
       <SignedIn>
         <TokenBridge>{children}</TokenBridge>
       </SignedIn>
       <SignedOut>
-        <div
-          style={{
-            height: "100%", display: "flex", flexDirection: "column", alignItems: "center",
-            justifyContent: "center", gap: "var(--s-6)", background: "var(--nav-bg)",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: "var(--s-3)" }}>
-            <MivaMark height={34} />
-            <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "var(--text-h3)", color: "#fff" }}>
-              VisageIQ
-            </span>
+        {/* Sign-in (Auth screens, screen 1): dark aside with the lockup and
+            access note; form pane carries Clerk's card. Google is the only
+            enabled method, so the card renders as the SSO-first route. */}
+        <div className="auth-screen">
+          <aside className="auth-aside">
+            <VqLockup mark={26} type={21} onDark />
+            <div className="pitch">Face match operations for the registry.</div>
+            <div className="foot">
+              Access is limited to authorised registry and examination staff. Every search is logged.
+            </div>
+            <div className="watermark" aria-hidden="true">
+              <VqMark size={250} onDark />
+            </div>
+          </aside>
+          <div className="auth-pane">
+            <div style={{ textAlign: "center" }}>
+              <h1>Sign in to VisageIQ</h1>
+              <p className="lede">Use your Miva staff Google account.</p>
+            </div>
+            {/* hash routing keeps the OAuth callback inside this single-page app
+                (no router), and forceRedirectUrl lands the user back here instead
+                of Clerk's hosted accounts.dev portal / default-redirect page. */}
+            <SignIn routing="hash" forceRedirectUrl="/" />
           </div>
-          <SignIn />
         </div>
       </SignedOut>
     </ClerkProvider>
