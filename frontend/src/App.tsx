@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiRequest, errorMessage, type Health, type SyncJob, type WorkerStatus } from "./api";
-import { useAuthInfo } from "./auth";
+import { OrgControl, useAuthInfo } from "./auth";
 import AnalyticsPage from "./components/AnalyticsPage";
 import SearchPage from "./components/SearchPage";
 import SettingsPage from "./components/SettingsPage";
@@ -188,6 +188,9 @@ export default function App() {
               <Icon name={dark ? "sparkles" : "globe"} size={16} />
             </button>
             <span className="side-meta hide-collapsed">{dark ? "Dark" : "Light"} theme</span>
+          </div>
+          <div className="hide-collapsed">
+            <OrgControl />
           </div>
           {email && (
             <div className="side-meta hide-collapsed" title={email}>

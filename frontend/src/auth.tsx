@@ -1,6 +1,15 @@
 /* All Clerk-touching code lives here. Without VITE_CLERK_PUBLISHABLE_KEY the
    app renders open (matches the backend's empty-CLERK_SECRET_KEY dev mode). */
-import { ClerkLoading, ClerkProvider, SignIn, SignedIn, SignedOut, useAuth, useUser } from "@clerk/clerk-react";
+import {
+  ClerkLoading,
+  ClerkProvider,
+  OrganizationSwitcher,
+  SignIn,
+  SignedIn,
+  SignedOut,
+  useAuth,
+  useUser,
+} from "@clerk/clerk-react";
 import { createContext, useContext, useEffect, useRef, type ReactNode } from "react";
 import { setAuthTokenGetter } from "./api";
 import { VqLoader, VqLockup, VqMark } from "./ds";
@@ -38,6 +47,23 @@ function TokenBridge({ children }: { children: ReactNode }) {
     >
       {children}
     </AuthCtx.Provider>
+  );
+}
+
+/* B2B: the Miva Open University org uses verified-domain automatic invitation —
+   the "Join" accept button lives in this switcher. Renders nothing in no-auth
+   dev mode (outside ClerkProvider the component would throw). */
+export function OrgControl() {
+  if (!PUBLISHABLE_KEY) return null;
+  return (
+    <OrganizationSwitcher
+      hidePersonal
+      appearance={{
+        elements: {
+          organizationSwitcherTrigger: { color: "rgba(255,255,255,.72)", padding: "4px 6px" },
+        },
+      }}
+    />
   );
 }
 
