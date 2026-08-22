@@ -1,7 +1,7 @@
 /* All Clerk-touching code lives here. Without VITE_CLERK_PUBLISHABLE_KEY the
    app renders open (matches the backend's empty-CLERK_SECRET_KEY dev mode). */
 import { ClerkProvider, SignIn, SignedIn, SignedOut, useAuth, useUser } from "@clerk/clerk-react";
-import { createContext, useContext, useEffect, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, type ReactNode } from "react";
 import { setAuthTokenGetter } from "./api";
 import { MivaMark } from "./ds";
 
@@ -17,10 +17,13 @@ export const useAuthInfo = () => useContext(AuthCtx);
 function TokenBridge({ children }: { children: ReactNode }) {
   const { getToken, signOut } = useAuth();
   const { user } = useUser();
-  useEffect(() => {
-    setAuthTokenGetter(() => getToken());
-    return () => setAuthTokenGetter(null);
-  }, [getToken]);
+  // Register DURING render, not in an effect: child effects run before parent
+  // effects, so App's mount-time fetches would otherwise fire tokenless. The
+  // ref keeps the getter current without re-registering machinery.
+  const getTokenRef = useRef(getToken);
+  getTokenRef.current = getToken;
+  setAuthTokenGetter(() => getTokenRef.current());
+  useEffect(() => () => setAuthTokenGetter(null), []);
   return (
     <AuthCtx.Provider
       value={{ email: user?.primaryEmailAddress?.emailAddress ?? null, signOut: () => { void signOut(); } }}

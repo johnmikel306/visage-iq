@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { DEFAULT_CFG, type Cfg } from "../App";
-import { apiRequest, type AuditRow, type Health, type SyncJob, type WorkerStatus } from "../api";
+import { apiRequest, errorMessage, type AuditRow, type Health, type SyncJob, type WorkerStatus } from "../api";
 import { Button, Checkbox, Icon, Panel, SettingRow, Slider } from "../ds";
 import { formatNumber, relativeTime } from "../format";
 
@@ -83,10 +83,14 @@ export default function SettingsPage({
 }) {
   const [prune, setPrune] = useState(false);
   const [auditRows, setAuditRows] = useState<AuditRow[]>([]);
+  const [auditError, setAuditError] = useState("");
   useEffect(() => {
     apiRequest<{ rows: AuditRow[] }>("/audit?limit=50")
-      .then((d) => setAuditRows(d.rows))
-      .catch(() => {});
+      .then((d) => {
+        setAuditRows(d.rows);
+        setAuditError("");
+      })
+      .catch((e) => setAuditError(errorMessage(e)));
   }, []);
   const set = (key: keyof Cfg, value: number) => setCfg({ ...cfg, [key]: value });
   const workerRunning = worker ? !worker.suspended : false;
@@ -410,7 +414,7 @@ export default function SettingsPage({
                     {auditRows.length === 0 && (
                       <tr>
                         <td colSpan={4} className="muted">
-                          No events yet.
+                          {auditError ? `Couldn't load the audit log: ${auditError}` : "No events yet."}
                         </td>
                       </tr>
                     )}

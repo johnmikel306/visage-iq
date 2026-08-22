@@ -177,7 +177,10 @@ export default function StudentsPage({ onNav }: { onNav: (tab: Tab) => void }) {
       if (photosOnly) params.set("has_photo", "true");
       try {
         const result = await apiRequest<StudentPage>(`/students?${params.toString()}`);
-        if (fetchSeq.current === seq) setPage(result);
+        if (fetchSeq.current === seq) {
+          setPage(result);
+          setError("");
+        }
       } catch (e) {
         if (fetchSeq.current === seq) setError(errorMessage(e));
       }

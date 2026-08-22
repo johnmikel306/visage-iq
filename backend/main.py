@@ -260,7 +260,9 @@ async def match_many(
         )
         for idx, face in enumerate(result.faces)
     ]
-    top = faces[0].candidates[0] if faces and faces[0].candidates else None
+    # Best candidate across ALL detected faces, not just face 0.
+    firsts = [f.candidates[0] for f in faces if f.candidates]
+    top = max(firsts, key=lambda c: c.similarity) if firsts else None
     audit.record(
         actor_of(request), "face_search",
         target=top.drive_file_id if top else None,
@@ -460,9 +462,19 @@ def get_image_bytes(request: Request, file_id: str) -> Response:
     try:
         # Browsers can't render HEIC/HEIF/TIFF originals; serve a normalized JPEG.
         jpeg = to_display_jpeg(data)
-        set_image(file_id, modified_time, jpeg)
-        return Response(content=jpeg, media_type="image/jpeg")
     except Exception:
+        # Undecodable original (e.g. DNG). Serve it with its REAL mime — the
+        # v2 cache namespace is JPEG-only, so originals are never cached.
         logger.warning("thumbnail transcode failed for %s; serving original bytes", file_id)
-        set_image(file_id, modified_time, data)
+        if mime == "image/jpeg":  # placeholder from the known-mtime branch, not the truth
+            try:
+                mime = get_metadata(file_id).mime_type or "application/octet-stream"
+            except DriveError:
+                mime = "application/octet-stream"
         return Response(content=data, media_type=mime)
+    try:
+        set_image(file_id, modified_time, jpeg)
+    except Exception:
+        # Cache write is best-effort; a Redis blip must not fail the response.
+        logger.warning("image cache write failed for %s", file_id, exc_info=True)
+    return Response(content=jpeg, media_type="image/jpeg")

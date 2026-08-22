@@ -54,7 +54,7 @@ def page(q: str | None, field: str, programme: str | None, cohort: str | None,
         cur.execute(f"SELECT COUNT(*) FROM students {where_sql}", params)
         total = int((cur.fetchone() or [0])[0])
         cur.execute(
-            f"SELECT {ROW_COLS} FROM students {where_sql} ORDER BY full_name LIMIT %s OFFSET %s",
+            f"SELECT {ROW_COLS} FROM students {where_sql} ORDER BY full_name, id LIMIT %s OFFSET %s",
             [*params, limit, offset],
         )
         rows = [_row(r) for r in cur.fetchall()]

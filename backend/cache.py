@@ -196,6 +196,7 @@ def get_students_sync_summary() -> dict | None:
     if not raw:
         return None
     try:
-        return json.loads(raw)
+        data = json.loads(raw)
     except (TypeError, ValueError):
         return None
+    return data if isinstance(data, dict) else None

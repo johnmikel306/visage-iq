@@ -540,6 +540,13 @@ p {
   background: var(--surface-2);
   color: var(--txt-1);
 }
+/* The dark retint above wins over the DS components' inline focus border —
+   restore a visible focus indicator on focused fields. */
+[data-theme="dark"] .main input:not([type="range"]):focus,
+[data-theme="dark"] .main select:focus,
+[data-theme="dark"] .main textarea:focus {
+  border-color: var(--focus) !important;
+}
 [data-theme="dark"] .main input[type="checkbox"] {
   accent-color: var(--focus);
 }
