@@ -4,7 +4,19 @@ export function apiUrl(path: string): string {
   return `${API_BASE_URL}${path}`;
 }
 
+// Set by auth.tsx when Clerk is active; null in no-auth dev mode.
+let getAuthToken: (() => Promise<string | null>) | null = null;
+export function setAuthTokenGetter(fn: (() => Promise<string | null>) | null) {
+  getAuthToken = fn;
+}
+
 export async function apiRequest<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
+  if (getAuthToken) {
+    const token = await getAuthToken();
+    if (token) {
+      options = { ...options, headers: { ...options.headers, Authorization: `Bearer ${token}` } };
+    }
+  }
   const response = await fetch(apiUrl(path), options);
   const contentType = response.headers.get("content-type") || "";
   const body = contentType.includes("application/json")
@@ -53,10 +65,18 @@ export interface SyncJob {
   progress: SyncProgress | null;
 }
 
+export interface CandidateStudent {
+  full_name: string;
+  matric?: string | null;
+  student_id?: string | null;
+  programme?: string | null;
+}
+
 export interface Candidate {
   drive_file_id: string;
   title: string;
   similarity: number;
+  student?: CandidateStudent | null;
 }
 
 export interface Face {
@@ -95,4 +115,51 @@ export interface FilePage {
   total: number;
   limit: number;
   offset: number;
+}
+
+export interface StudentRow {
+  id: number;
+  natural_key: string;
+  student_id?: string | null;
+  matric?: string | null;
+  full_name: string;
+  email?: string | null;
+  programme?: string | null;
+  cohort?: string | null;
+  level_semester?: string | null;
+  photo_drive_file_id?: string | null;
+}
+
+export interface StudentPage {
+  rows: StudentRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface StudentSyncSummary {
+  at?: string;
+  ok?: boolean;
+  error?: string | null;
+  rows?: number;
+  upserted?: number;
+  deleted?: number;
+  skipped_no_key?: number;
+}
+
+export interface StudentFacets {
+  programmes: string[];
+  cohorts: string[];
+  levels: string[];
+  total: number;
+  last_sync?: StudentSyncSummary | null;
+}
+
+export interface AuditRow {
+  id: number;
+  ts?: string | null;
+  actor: string;
+  action: string;
+  target?: string | null;
+  details?: Record<string, unknown> | null;
 }

@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DEFAULT_CFG, type Cfg } from "../App";
-import type { Health, SyncJob, WorkerStatus } from "../api";
+import { apiRequest, type AuditRow, type Health, type SyncJob, type WorkerStatus } from "../api";
 import { Button, Checkbox, Icon, Panel, SettingRow, Slider } from "../ds";
 import { formatNumber, relativeTime } from "../format";
 
@@ -11,6 +11,7 @@ const SECTIONS: [string, string][] = [
   ["database", "Database & index"],
   ["worker", "Worker"],
   ["sync", "Drive sync"],
+  ["audit", "Audit"],
 ];
 
 // Swatch pairs are (nav, page) colors — static previews, not live tokens.
@@ -81,6 +82,12 @@ export default function SettingsPage({
   onForceUnlock: () => void;
 }) {
   const [prune, setPrune] = useState(false);
+  const [auditRows, setAuditRows] = useState<AuditRow[]>([]);
+  useEffect(() => {
+    apiRequest<{ rows: AuditRow[] }>("/audit?limit=50")
+      .then((d) => setAuditRows(d.rows))
+      .catch(() => {});
+  }, []);
   const set = (key: keyof Cfg, value: number) => setCfg({ ...cfg, [key]: value });
   const workerRunning = worker ? !worker.suspended : false;
   const syncing = activeSync && ["queued", "running"].includes(activeSync.status);
@@ -356,7 +363,60 @@ export default function SettingsPage({
                   {syncing ? "Sync running…" : "Sync now"}
                 </Button>
               </SettingRow>
+              <SettingRow
+                title="Student directory"
+                desc="Re-reads the admissions sheet now. Also runs automatically after every Drive photo sync."
+              >
+                <Button
+                  kind="secondary"
+                  size="sm"
+                  iconLeft={<Icon name="refresh" size={16} />}
+                  onClick={() => {
+                    apiRequest("/students/sync", { method: "POST" }).catch(() => {});
+                  }}
+                >
+                  Sync students now
+                </Button>
+              </SettingRow>
               {syncError && <div className="alert">{syncError}</div>}
+            </Panel>
+          </section>
+
+          <section className="set-section" id="set-audit">
+            <Panel title="Audit" meta="Most recent 50 events — every search, view and control action" pad={false}>
+              <div className="table-scroll" style={{ padding: "var(--s-4) var(--s-2)", maxHeight: 380 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Actor</th>
+                      <th>Action</th>
+                      <th>Target</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditRows.map((row) => (
+                      <tr key={row.id}>
+                        <td style={{ whiteSpace: "nowrap" }}>{row.ts ? relativeTime(row.ts) : ""}</td>
+                        <td>{row.actor}</td>
+                        <td>
+                          <span className="tag">{row.action}</span>
+                        </td>
+                        <td style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {row.target || ""}
+                        </td>
+                      </tr>
+                    ))}
+                    {auditRows.length === 0 && (
+                      <tr>
+                        <td colSpan={4} className="muted">
+                          No events yet.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </Panel>
           </section>
         </div>

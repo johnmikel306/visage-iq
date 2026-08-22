@@ -39,6 +39,14 @@ def enqueue_retry(file_ids: list[str]) -> str:
     return job.id
 
 
+def enqueue_students_sync() -> str:
+    job = get_queue().enqueue(
+        "backend.students_sync.run_students_sync_job",
+        job_timeout=15 * 60,
+    )
+    return job.id
+
+
 def fetch_job(job_id: str):
     return get_queue().fetch_job(job_id)
 

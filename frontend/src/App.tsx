@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiRequest, errorMessage, type Health, type SyncJob, type WorkerStatus } from "./api";
+import { useAuthInfo } from "./auth";
 import AnalyticsPage from "./components/AnalyticsPage";
 import SearchPage from "./components/SearchPage";
 import SettingsPage from "./components/SettingsPage";
@@ -37,6 +38,7 @@ function loadCfg(): Cfg {
 }
 
 export default function App() {
+  const { email, signOut } = useAuthInfo();
   const [page, setPage] = useState<Tab>(() => {
     const saved = localStorage.getItem("visageiq-page");
     return NAV.some(([key]) => key === saved) ? (saved as Tab) : "search";
@@ -190,6 +192,22 @@ export default function App() {
             </button>
             <span className="side-meta hide-collapsed">{dark ? "Dark" : "Light"} theme</span>
           </div>
+          {email && (
+            <div className="side-meta hide-collapsed" title={email}>
+              {email}
+              {" · "}
+              <a
+                href="#signout"
+                style={{ color: "rgba(255,255,255,.7)" }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  signOut?.();
+                }}
+              >
+                Sign out
+              </a>
+            </div>
+          )}
         </div>
       </aside>
       <main className="main">

@@ -65,6 +65,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.ui
+      args:
+        # Interpolated from .env at compose time; baked into the Vite bundle.
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-}
     restart: unless-stopped
     environment:
       API_BASE_URL: http://api:8000

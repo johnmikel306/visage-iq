@@ -357,9 +357,16 @@ export default function SearchPage({ cfg }: { cfg: Cfg }) {
                           <span className="muted" style={{ fontWeight: 700 }}>
                             #{index + 1}
                           </span>
-                          <span className="cand-name">{candidate.title}</span>
+                          <span className="cand-name">{candidate.student?.full_name ?? candidate.title}</span>
                         </div>
-                        <div className="cand-meta">cosine {candidate.similarity.toFixed(3)}</div>
+                        <div className="cand-meta">
+                          {[
+                            ...(candidate.student
+                              ? [candidate.student.matric, candidate.student.programme].filter(Boolean)
+                              : ["no student record linked"]),
+                            `cosine ${candidate.similarity.toFixed(3)}`,
+                          ].join(" · ")}
+                        </div>
                         <div style={{ marginTop: 8, maxWidth: 340 }}>
                           <ScoreBar value={confidencePct(candidate.similarity)} kind={kind} />
                         </div>

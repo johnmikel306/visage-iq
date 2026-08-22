@@ -1,3 +1,4 @@
+import json
 import logging
 import threading
 import uuid
@@ -179,3 +180,22 @@ def get_active_sync() -> str | None:
 
 def clear_active_sync() -> None:
     get_redis().delete(ACTIVE_SYNC_KEY)
+
+
+# --- Students-sheet sync summary (set by students_sync, read by /students/facets) ---
+
+STUDENTS_SYNC_KEY = "students:last_sync"
+
+
+def set_students_sync_summary(summary: dict) -> None:
+    get_redis().set(STUDENTS_SYNC_KEY, json.dumps(summary))
+
+
+def get_students_sync_summary() -> dict | None:
+    raw = get_redis().get(STUDENTS_SYNC_KEY)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None

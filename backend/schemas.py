@@ -5,12 +5,20 @@ from pydantic import BaseModel, Field
 Verdict = Literal["MATCH", "REVIEW", "NO_MATCH"]
 
 
+class StudentRef(BaseModel):
+    full_name: str
+    matric: str | None = None
+    student_id: str | None = None
+    programme: str | None = None
+
+
 class Candidate(BaseModel):
     drive_file_id: str
     title: str
     similarity: float = Field(ge=-1.0, le=1.0)
     confidence_pct: float = Field(ge=0.0, le=100.0)
     verdict: Verdict
+    student: StudentRef | None = None
 
 
 class MatchResponse(BaseModel):
@@ -105,3 +113,47 @@ class FileStatusPage(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class AuditRow(BaseModel):
+    id: int
+    ts: str | None = None
+    actor: str
+    action: str
+    target: str | None = None
+    details: dict | None = None
+
+
+class AuditPage(BaseModel):
+    rows: list[AuditRow]
+    total: int
+    limit: int
+    offset: int
+
+
+class StudentRow(BaseModel):
+    id: int
+    natural_key: str
+    student_id: str | None = None
+    matric: str | None = None
+    full_name: str
+    email: str | None = None
+    programme: str | None = None
+    cohort: str | None = None
+    level_semester: str | None = None
+    photo_drive_file_id: str | None = None
+
+
+class StudentPage(BaseModel):
+    rows: list[StudentRow]
+    total: int
+    limit: int
+    offset: int
+
+
+class StudentFacets(BaseModel):
+    programmes: list[str]
+    cohorts: list[str]
+    levels: list[str]
+    total: int
+    last_sync: dict | None = None

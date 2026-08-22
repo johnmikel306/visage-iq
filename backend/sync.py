@@ -543,7 +543,12 @@ def _ensure_pool_open() -> None:
 
 def run_sync_job(prune: bool = True) -> dict:
     _ensure_pool_open()
-    return run_sync(prune=prune).__dict__
+    stats = run_sync(prune=prune).__dict__
+    if settings.students_sheet_id:
+        from backend.students_sync import run_students_sync
+
+        run_students_sync()  # records its own summary; never raises
+    return stats
 
 
 def run_retry(file_ids: list[str]) -> SyncStats:

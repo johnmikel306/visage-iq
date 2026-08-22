@@ -76,7 +76,7 @@ make up        # docker compose up --build -d (~5–10 min on first build)
 make health    # smoke-test the api
 ```
 
-Open the React UI at http://localhost:3000. The sidebar nav has three pages: **Face search** (match flow), **Analytics** (per-file outcomes from the last sync), and **Settings** (thresholds, index health, worker and Drive sync controls). Go to **Settings → Drive sync → Sync now** to populate the database. Upload a photo to see matches. The Streamlit reference UI (`frontend-test/`) runs separately at http://localhost:8501.
+Open the React UI at http://localhost:3000. The sidebar nav has four pages: **Face search** (match flow — results show the matched student's name when the directory is linked), **Student search** (the directory synced from the admissions Google Sheet — identity columns only, never NIN/addresses/phones), **Analytics** (per-file outcomes from the last sync), and **Settings** (thresholds, appearance, index health, worker/Drive-sync controls, and the audit trail). Go to **Settings → Drive sync → Sync now** to populate the database. Upload a photo to see matches. When Clerk keys are configured, the whole app sits behind Google sign-in restricted to `@miva.university`, and every search, record view, and control action is written to the `audit_log` table (visible under **Settings → Audit**). The Streamlit reference UI (`frontend-test/`) runs separately at http://localhost:8501.
 
 While a sync is running, the topbar status strip shows live progress counters; it follows you as you switch between pages.
 
@@ -261,6 +261,11 @@ All configuration lives in `.env` (local) or service environment variables (Rend
 | `DOWNLOAD_WORKERS` | `4` | `ThreadPoolExecutor` size for Drive-download prefetch. Overlaps I/O with embedding — the main GPU throughput win. Set `1` to disable. |
 | `DOWNLOAD_MAX_INFLIGHT` | `8` | Cap on simultaneously prefetched downloads (≈ `N × image_size` bytes buffered). |
 | `API_BASE_URL` | `http://api:8000` | URL the UI uses to call the api |
+| `STUDENTS_SHEET_ID` | *(empty = disabled)* | Spreadsheet id of the admissions workbook (share it with the service account; enable the Sheets API). When set, the worker syncs the "Pack Prosessing" identity columns into the `students` table after every photo sync. |
+| `STUDENTS_WORKSHEET` | `Pack Prosessing` | Worksheet (tab) name to read |
+| `CLERK_SECRET_KEY` | *(empty = auth off)* | Clerk secret key. When set, every endpoint except `/health` requires a signed-in `@miva.university` Google account (bearer token or `__session` cookie). |
+| `VITE_CLERK_PUBLISHABLE_KEY` | *(empty = auth off)* | Clerk publishable key, baked into the UI build; shows the Google sign-in gate |
+| `ALLOWED_EMAIL_DOMAIN` | `miva.university` | Server-side email-domain check on every request |
 
 ---
 

@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -15,6 +16,7 @@ from backend.cache import (
     get_image,
     get_last_sync_finished_at,
     get_redis,
+    get_students_sync_summary,
     set_image,
     unlock,
 )
@@ -30,10 +32,12 @@ from backend.embedding import (
     to_display_jpeg,
 )
 from backend.gdrive import DriveError, download_bytes, get_metadata
-from backend.queue import enqueue_retry, enqueue_sync, fetch_job
-from backend import analytics, scoring
+from backend.queue import enqueue_retry, enqueue_students_sync, enqueue_sync, fetch_job
+from backend import analytics, audit, scoring, students
+from backend.auth import actor_of, clerk_middleware
 from backend.schemas import (
     AnalyticsSummary,
+    AuditPage,
     Candidate,
     FileStatusPage,
     FaceMatchResult,
@@ -42,6 +46,10 @@ from backend.schemas import (
     MatchManyResponse,
     RetryEnqueueResponse,
     RetryRequest,
+    StudentFacets,
+    StudentPage,
+    StudentRef,
+    StudentRow,
     SyncEnqueueResponse,
     SyncJobStatus,
     Verdict,
@@ -91,6 +99,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="VisageIQ API", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.middleware("http")(clerk_middleware)
 
 
 def _verdict(similarity: float) -> Verdict:
@@ -114,10 +123,14 @@ def _enrolled_count() -> int:
 
 def _search(result: EmbeddingResult, top_k: int) -> list[Candidate]:
     sql = (
-        "SELECT drive_file_id, drive_file_name, "
-        "       1 - (face_embedding <=> %s) AS similarity "
-        "FROM persons "
-        "ORDER BY face_embedding <=> %s "
+        "SELECT p.drive_file_id, p.drive_file_name, "
+        "       1 - (p.face_embedding <=> %s) AS similarity, "
+        "       s.full_name, s.matric, s.student_id, s.programme "
+        "FROM persons p "
+        "LEFT JOIN LATERAL (SELECT full_name, matric, student_id, programme "
+        "                   FROM students st WHERE st.photo_drive_file_id = p.drive_file_id "
+        "                   ORDER BY st.row_ts DESC NULLS LAST LIMIT 1) s ON TRUE "
+        "ORDER BY p.face_embedding <=> %s "
         "LIMIT %s"
     )
     emb = result.embedding
@@ -125,7 +138,7 @@ def _search(result: EmbeddingResult, top_k: int) -> list[Candidate]:
         cur.execute(sql, (emb, emb, top_k))
         rows = cur.fetchall()
     out: list[Candidate] = []
-    for file_id, title, sim in rows:
+    for file_id, title, sim, s_name, s_matric, s_sid, s_prog in rows:
         sim_f = float(sim)
         out.append(
             Candidate(
@@ -136,6 +149,9 @@ def _search(result: EmbeddingResult, top_k: int) -> list[Candidate]:
                     sim_f, settings.review_threshold, settings.match_threshold
                 ),
                 verdict=_verdict(sim_f),
+                student=StudentRef(
+                    full_name=s_name, matric=s_matric, student_id=s_sid, programme=s_prog
+                ) if s_name else None,
             )
         )
     return out
@@ -201,6 +217,12 @@ async def match(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     candidates = _search(result, top_k)
+    audit.record(
+        actor_of(request), "face_search",
+        target=candidates[0].drive_file_id if candidates else None,
+        details={"faces": result.face_count,
+                 "top_similarity": candidates[0].similarity if candidates else None},
+    )
     return MatchResponse(
         query_face_bbox=result.bbox,
         query_face_count=result.face_count,
@@ -229,19 +251,26 @@ async def match_many(
     except InvalidImage as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    faces = [
+        FaceMatchResult(
+            face_index=idx,
+            bbox=face.bbox,
+            det_score=face.det_score,
+            candidates=_search(face, top_k),
+        )
+        for idx, face in enumerate(result.faces)
+    ]
+    top = faces[0].candidates[0] if faces and faces[0].candidates else None
+    audit.record(
+        actor_of(request), "face_search",
+        target=top.drive_file_id if top else None,
+        details={"faces": len(faces), "top_similarity": top.similarity if top else None},
+    )
     return MatchManyResponse(
         query_face_count=len(result.faces),
         query_rotation=result.rotation,
         enrolled_count=_enrolled_count(),
-        faces=[
-            FaceMatchResult(
-                face_index=idx,
-                bbox=face.bbox,
-                det_score=face.det_score,
-                candidates=_search(face, top_k),
-            )
-            for idx, face in enumerate(result.faces)
-        ],
+        faces=faces,
     )
 
 
@@ -249,6 +278,7 @@ async def match_many(
 @limiter.limit(settings.sync_rate_limit)
 def trigger_sync(request: Request, prune: bool = Query(default=True)) -> SyncEnqueueResponse:
     job_id = enqueue_sync(prune=prune)
+    audit.record(actor_of(request), "sync_triggered", target=job_id, details={"prune": prune})
     return SyncEnqueueResponse(job_id=job_id)
 
 
@@ -273,6 +303,7 @@ def force_unlock(request: Request) -> dict:
     logger.warning(
         "force-unlock requested: lock:sync, lock:retry and sync:active_job_id cleared"
     )
+    audit.record(actor_of(request), "force_unlock")
     return {"cleared": True}
 
 
@@ -286,6 +317,7 @@ def trigger_retry(request: Request, body: RetryRequest) -> RetryEnqueueResponse:
     metadata round-trip per file. Holds its own lock (`lock:retry`).
     """
     job_id = enqueue_retry(body.file_ids)
+    audit.record(actor_of(request), "retry_triggered", target=job_id, details={"count": len(body.file_ids)})
     return RetryEnqueueResponse(job_id=job_id, count=len(body.file_ids))
 
 
@@ -304,6 +336,7 @@ def worker_pause(request: Request) -> WorkerStatus:
 
     suspend(get_redis())
     logger.info("worker pause requested: rq:suspended set")
+    audit.record(actor_of(request), "worker_paused")
     return WorkerStatus(suspended=True)
 
 
@@ -314,6 +347,7 @@ def worker_resume(request: Request) -> WorkerStatus:
 
     resume(get_redis())
     logger.info("worker resume requested: rq:suspended cleared")
+    audit.record(actor_of(request), "worker_resumed")
     return WorkerStatus(suspended=False)
 
 
@@ -352,8 +386,63 @@ def analytics_files(
     return FileStatusPage(**analytics.files_page(outcome=outcome, ext=ext, q=q, limit=limit, offset=offset))
 
 
+@app.get("/audit", response_model=AuditPage)
+def audit_page(
+    request: Request,
+    actor: str | None = Query(default=None),
+    action: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> AuditPage:
+    return AuditPage(**audit.page(actor=actor, action=action, limit=limit, offset=offset))
+
+
+@app.get("/students", response_model=StudentPage)
+def students_page(
+    request: Request,
+    q: str | None = Query(default=None, max_length=200),
+    # Literal keeps caller text out of audit_log.details (ids/enums only, never free text).
+    field: Literal["all", "name", "matric", "sid", "email", "programme", "cohort"] = Query(default="all"),
+    programme: str | None = Query(default=None),
+    cohort: str | None = Query(default=None),
+    level: str | None = Query(default=None),
+    has_photo: bool = Query(default=False),
+    limit: int = Query(default=48, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> StudentPage:
+    audit.record(actor_of(request), "student_search",
+                 details={"field": field, "filtered": bool(programme or cohort or level or has_photo or q)})
+    return StudentPage(**students.page(q=q, field=field, programme=programme, cohort=cohort,
+                                       level=level, has_photo=has_photo, limit=limit, offset=offset))
+
+
+@app.get("/students/facets", response_model=StudentFacets)
+def students_facets(request: Request) -> StudentFacets:
+    data = students.facets()
+    data["last_sync"] = get_students_sync_summary()
+    return StudentFacets(**data)
+
+
+@app.get("/students/{student_pk}", response_model=StudentRow)
+def student_detail(request: Request, student_pk: int) -> StudentRow:
+    row = students.get(student_pk)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Student not found")
+    audit.record(actor_of(request), "student_view", target=row["natural_key"])
+    return StudentRow(**row)
+
+
+@app.post("/students/sync", response_model=SyncEnqueueResponse)
+@limiter.limit(settings.sync_rate_limit)
+def trigger_students_sync(request: Request) -> SyncEnqueueResponse:
+    job_id = enqueue_students_sync()
+    audit.record(actor_of(request), "students_sync_triggered", target=job_id)
+    return SyncEnqueueResponse(job_id=job_id)
+
+
 @app.get("/image/{file_id}")
-def get_image_bytes(file_id: str) -> Response:
+def get_image_bytes(request: Request, file_id: str) -> Response:
+    audit.record(actor_of(request), "image_view", target=file_id)
     modified_time = _lookup_modified_time(file_id)
     cached = get_image(file_id, modified_time)
     if cached:

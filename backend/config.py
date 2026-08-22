@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     match_rate_limit: str = "30/minute"
     sync_rate_limit: str = "5/minute"
 
+    # --- student directory (Google Sheet) ---
+    students_sheet_id: str = ""          # empty = feature disabled
+    students_worksheet: str = "Pack Prosessing"
+
+    # --- auth (Clerk) + audit ---
+    clerk_secret_key: str = ""           # empty = auth disabled (dev mode)
+    allowed_email_domain: str = "miva.university"
+
     @property
     def providers_list(self) -> list[str]:
         return [p.strip() for p in self.onnx_providers.split(",") if p.strip()]

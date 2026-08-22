@@ -46,3 +46,37 @@ UPDATE file_status fs
 SET outcome = 'enrolled', det_score = p.det_score
 FROM persons p
 WHERE p.drive_file_id = fs.drive_file_id AND fs.outcome = 'unchanged';
+
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- Student directory, synced from the admissions "Pack Prosessing" sheet.
+-- Identity columns only (see docs/superpowers/specs/2026-08-22-student-directory-design.md).
+CREATE TABLE IF NOT EXISTS students (
+    id                  BIGSERIAL PRIMARY KEY,
+    natural_key         TEXT UNIQUE NOT NULL,   -- first non-blank of student_id | matric | email
+    student_id          TEXT,
+    matric              TEXT,
+    full_name           TEXT NOT NULL,
+    email               TEXT,
+    programme           TEXT,
+    cohort              TEXT,
+    level_semester      TEXT,
+    photo_drive_file_id TEXT,
+    row_ts              TIMESTAMPTZ,
+    synced_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS students_photo_idx ON students (photo_drive_file_id);
+CREATE INDEX IF NOT EXISTS students_name_trgm ON students USING gin (full_name gin_trgm_ops);
+
+-- Append-only audit trail. `details` carries ids/counts only — never names,
+-- emails, or free text (the audit log must not become a second PII store).
+CREATE TABLE IF NOT EXISTS audit_log (
+    id       BIGSERIAL PRIMARY KEY,
+    ts       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    actor    TEXT NOT NULL,
+    action   TEXT NOT NULL,
+    target   TEXT,
+    details  JSONB
+);
+CREATE INDEX IF NOT EXISTS audit_ts_idx ON audit_log (ts DESC);
+CREATE INDEX IF NOT EXISTS audit_actor_idx ON audit_log (actor);
