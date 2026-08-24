@@ -969,6 +969,108 @@ td:first-child {
   max-width: 46ch;
 }
 
+/* ── toasts (Auth screens component set) ─────────────────── */
+.toast {
+  display: flex;
+  gap: var(--s-3);
+  align-items: flex-start;
+  padding: var(--s-4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--line);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-md);
+  width: 392px;
+  max-width: calc(100vw - 32px);
+  position: relative;
+}
+.toast .ic {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.toast b {
+  display: block;
+  font-family: var(--font-display);
+  font-size: var(--text-body);
+  font-weight: 600;
+  margin-bottom: 2px;
+  color: var(--txt-1);
+}
+.toast p {
+  margin: 0;
+  color: var(--txt-2);
+  font-size: var(--text-caption);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.toast .x {
+  color: var(--txt-3);
+  cursor: pointer;
+  flex: none;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+.toast.error {
+  border-color: var(--no);
+}
+.toast.error .ic {
+  background: var(--no-bg);
+  color: var(--no);
+}
+.toast.warn .ic {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.toast.ok .ic {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.toast.info .ic {
+  background: var(--surface-3);
+  color: var(--txt-2);
+}
+.toast-live {
+  position: fixed;
+  right: var(--s-6);
+  top: var(--s-6);
+  z-index: 100;
+  animation: toast-drop 0.32s var(--ease-out);
+}
+@keyframes toast-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+}
+.toast .life {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--ok);
+  border-radius: 0 0 var(--r-md) var(--r-md);
+  animation: toast-life 5s linear forwards;
+  transform-origin: left;
+}
+.toast.info .life {
+  background: var(--txt-3);
+}
+@keyframes toast-life {
+  to {
+    transform: scaleX(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast-live {
+    animation: none;
+  }
+}
+
 /* ── loaders (Option 8: dot cluster + rotating copy) ─────── */
 .vq-dots {
   display: flex;

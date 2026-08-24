@@ -141,6 +141,7 @@ export interface StudentSyncSummary {
   at?: string;
   ok?: boolean;
   error?: string | null;
+  detail?: string | null;
   rows?: number;
   upserted?: number;
   deleted?: number;

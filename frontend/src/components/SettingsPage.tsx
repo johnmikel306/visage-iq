@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { DEFAULT_CFG, type Cfg } from "../App";
 import { apiRequest, errorMessage, type AuditRow, type Health, type SyncJob, type WorkerStatus } from "../api";
-import { Button, Checkbox, Icon, Panel, SettingRow, Slider } from "../ds";
+import { Button, Checkbox, Icon, Panel, SettingRow, Slider, toast } from "../ds";
 import { formatNumber, relativeTime } from "../format";
 
 const SECTIONS: [string, string][] = [
@@ -60,7 +60,6 @@ export default function SettingsPage({
   health,
   worker,
   activeSync,
-  syncError,
   onToggleWorker,
   onSync,
   onForceUnlock,
@@ -76,7 +75,6 @@ export default function SettingsPage({
   health: Health | null;
   worker: WorkerStatus | null;
   activeSync: SyncJob | null;
-  syncError: string;
   onToggleWorker: () => void;
   onSync: (prune: boolean) => void;
   onForceUnlock: () => void;
@@ -376,13 +374,17 @@ export default function SettingsPage({
                   size="sm"
                   iconLeft={<Icon name="refresh" size={16} />}
                   onClick={() => {
-                    apiRequest("/students/sync", { method: "POST" }).catch(() => {});
+                    apiRequest<{ job_id: string }>("/students/sync", { method: "POST" })
+                      .then((body) =>
+                        toast("ok", "Student sync started",
+                          `Job ${body.job_id.slice(0, 8)} — the Students page shows the result when it finishes.`),
+                      )
+                      .catch((e) => toast("error", "Couldn't start the student sync", errorMessage(e)));
                   }}
                 >
                   Sync students now
                 </Button>
               </SettingRow>
-              {syncError && <div className="alert">{syncError}</div>}
             </Panel>
           </section>
 

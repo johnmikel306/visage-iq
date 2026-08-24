@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiRequest, errorMessage, type AnalyticsSummary, type FilePage, type SyncJob } from "../api";
-import { Button, Checkbox, Icon, Input, Panel, Select } from "../ds";
+import { Button, Checkbox, Icon, Input, Panel, Select, toast } from "../ds";
 import { formatNumber, relativeTime } from "../format";
 
 const outcomeLabels: Record<string, string> = {
@@ -61,7 +61,6 @@ export default function AnalyticsPage({
   const [fileQuery, setFileQuery] = useState<FileQuery>({ outcome: "", ext: "", q: "", pageSize: 50, offset: 0 });
   const [filenameDraft, setFilenameDraft] = useState("");
   const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
-  const [retryMessage, setRetryMessage] = useState("");
 
   async function loadAnalytics() {
     setAnalyticsLoading(true);
@@ -86,7 +85,6 @@ export default function AnalyticsPage({
     (async () => {
       setFilesLoading(true);
       setSelectedFileIds(new Set());
-      setRetryMessage("");
       setFilePage((page) => ({ ...page, rows: [] }));
       const params = new URLSearchParams({
         limit: String(fileQuery.pageSize),
@@ -115,19 +113,17 @@ export default function AnalyticsPage({
 
   async function retryFiles(fileIds: string[]) {
     if (!fileIds.length) return;
-    setRetryMessage("");
     try {
       const body = await apiRequest<{ job_id: string; count?: number }>("/sync/retry", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ file_ids: fileIds }),
       });
-      setRetryMessage(
-        `Retry queued for ${body.count || fileIds.length} file(s), job ${String(body.job_id).slice(0, 8)}.`,
-      );
+      toast("ok", "Retry queued",
+        `${body.count || fileIds.length} file(s) re-queued as job ${String(body.job_id).slice(0, 8)}.`);
       onOpsChanged();
     } catch (error) {
-      setRetryMessage(errorMessage(error));
+      toast("error", "Couldn't queue the retry", errorMessage(error));
     }
   }
 
@@ -413,7 +409,6 @@ export default function AnalyticsPage({
                   onChange={(value) => applyFilters({ pageSize: Number(value) })}
                 />
               </div>
-              {retryMessage && <div className="muted">{retryMessage}</div>}
               <div className="table-scroll" style={{ maxHeight: 480 }}>
                 <table>
                   <thead>

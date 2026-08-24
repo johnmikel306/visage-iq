@@ -74,6 +74,20 @@ const GLYPHS: Record<string, ReactNode> = {
       <circle cx="12" cy="7" r="4" />
     </>
   ),
+  alert: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 8v5" />
+      <path d="M12 17h.01" />
+    </>
+  ),
+  info: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5" />
+      <path d="M12 8h.01" />
+    </>
+  ),
   fileText: (
     <>
       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -183,6 +197,56 @@ export function VqLockup({
         <b style={{ fontWeight: 700, color: dark ? VQ.accentOnDark : VQ.accent }}>IQ</b>
       </span>
     </span>
+  );
+}
+
+/* ── Toasts (design "Auth screens" component set) ──────────
+   Top-right, 392px, one at a time. error/warn persist until dismissed;
+   ok/info auto-dismiss after 5s with a life bar. */
+export type ToastKind = "error" | "warn" | "ok" | "info";
+interface ToastMsg {
+  kind: ToastKind;
+  title: string;
+  body?: string;
+}
+let pushToast: ((t: ToastMsg) => void) | null = null;
+
+export function toast(kind: ToastKind, title: string, body?: string) {
+  pushToast?.({ kind, title, body });
+}
+
+const TOAST_ICON: Record<ToastKind, string> = { error: "alert", warn: "alert", ok: "check", info: "info" };
+
+export function ToastHost() {
+  const [current, setCurrent] = useState<(ToastMsg & { id: number }) | null>(null);
+  useEffect(() => {
+    let id = 0;
+    pushToast = (t) => setCurrent({ ...t, id: ++id });
+    return () => {
+      pushToast = null;
+    };
+  }, []);
+  const autoDismiss = current && (current.kind === "ok" || current.kind === "info");
+  useEffect(() => {
+    if (!autoDismiss) return;
+    const t = setTimeout(() => setCurrent(null), 5000);
+    return () => clearTimeout(t);
+  }, [current, autoDismiss]);
+  if (!current) return null;
+  return (
+    <div className={"toast toast-live " + current.kind} key={current.id} role="status">
+      <span className="ic">
+        <Icon name={TOAST_ICON[current.kind]} size={15} />
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <b>{current.title}</b>
+        {current.body && <p>{current.body}</p>}
+      </div>
+      <button className="x" onClick={() => setCurrent(null)} aria-label="Dismiss">
+        <Icon name="x" size={15} />
+      </button>
+      {autoDismiss && <span className="life"></span>}
+    </div>
   );
 }
 

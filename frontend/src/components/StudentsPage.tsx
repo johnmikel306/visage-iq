@@ -303,7 +303,11 @@ export default function StudentsPage({ onNav }: { onNav: (tab: Tab) => void }) {
         )}
       </div>
       {error && <div className="alert">{error}</div>}
-      {facets?.last_sync?.error && <div className="alert">Student sync failed: {facets.last_sync.error}</div>}
+      {facets?.last_sync?.error && (
+        <div className="alert" title={facets.last_sync.detail || undefined}>
+          Student sync failed — {facets.last_sync.error}
+        </div>
+      )}
       <div className="row" style={{ justifyContent: "space-between" }}>
         <div className="muted">
           {formatNumber(page.total)} matches · showing {page.rows.length}

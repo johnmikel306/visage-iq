@@ -5,7 +5,7 @@ import AnalyticsPage from "./components/AnalyticsPage";
 import SearchPage from "./components/SearchPage";
 import SettingsPage from "./components/SettingsPage";
 import StudentsPage from "./components/StudentsPage";
-import { Icon, VqLockup, VqMark } from "./ds";
+import { Icon, toast, ToastHost, VqLockup, VqMark } from "./ds";
 import { formatNumber, relativeTime } from "./format";
 
 export type Tab = "search" | "students" | "analytics" | "settings";
@@ -52,7 +52,6 @@ export default function App() {
   const [healthError, setHealthError] = useState("");
   const [worker, setWorker] = useState<WorkerStatus | null>(null);
   const [activeSync, setActiveSync] = useState<SyncJob | null>(null);
-  const [syncError, setSyncError] = useState("");
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -117,32 +116,39 @@ export default function App() {
 
   async function toggleWorker() {
     if (!worker) return;
-    await apiRequest(worker.suspended ? "/worker/resume" : "/worker/pause", { method: "POST" });
-    await loadWorker();
+    const resuming = worker.suspended;
+    try {
+      await apiRequest(resuming ? "/worker/resume" : "/worker/pause", { method: "POST" });
+      toast("ok", resuming ? "Worker resumed" : "Worker paused",
+        resuming ? "Queued sync jobs will be picked up again." : "Queued jobs wait until you resume it.");
+      await loadWorker();
+    } catch (error) {
+      toast("error", "Couldn't change the worker state", errorMessage(error));
+    }
   }
 
   async function triggerSync(prune: boolean) {
-    setSyncError("");
     try {
       const body = await apiRequest<{ job_id: string; status?: string }>(`/sync?prune=${prune}`, {
         method: "POST",
       });
+      toast("ok", "Drive sync started", `Job ${body.job_id.slice(0, 8)} is queued — progress shows in the topbar.`);
       await refreshOps();
       setActiveSync({ job_id: body.job_id, status: body.status || "queued", progress: null });
     } catch (error) {
-      setSyncError(errorMessage(error));
+      toast("error", "Couldn't start the Drive sync", errorMessage(error));
     }
   }
 
   async function forceUnlock() {
     const ok = window.confirm("Clear the active sync lock? Use this only when no worker is running a sync.");
     if (!ok) return;
-    setSyncError("");
     try {
       await apiRequest("/sync/force-unlock", { method: "POST" });
+      toast("ok", "Sync lock cleared", "The next sync can start immediately.");
       await refreshOps();
     } catch (error) {
-      setSyncError(errorMessage(error));
+      toast("error", "Couldn't clear the sync lock", errorMessage(error));
     }
   }
 
@@ -155,6 +161,7 @@ export default function App() {
 
   return (
     <div className={"app" + (collapsed ? " collapsed" : "")}>
+      <ToastHost />
       <aside className="side">
         <div className="side-top">
           {/* Logo rules: 32px mark alone when the rail is collapsed, lockup expanded. */}
@@ -278,7 +285,6 @@ export default function App() {
             health={health}
             worker={worker}
             activeSync={activeSync}
-            syncError={syncError}
             onToggleWorker={toggleWorker}
             onSync={triggerSync}
             onForceUnlock={forceUnlock}
