@@ -59,8 +59,27 @@ WHERE file_status.outcome <> 'enrolled' OR EXCLUDED.outcome = 'enrolled'
 # not flip to "unchanged" on later syncs.
 TOUCH_STATUS_SQL = "UPDATE file_status SET last_seen_at = NOW() WHERE drive_file_id = %s"
 
+ALT_UPSERT_SQL = """
+INSERT INTO alt_embeddings (drive_file_id, model, embedding, det_score, updated_at)
+VALUES (%s, %s, %s, %s, NOW())
+ON CONFLICT (drive_file_id, model) DO UPDATE SET
+    embedding  = EXCLUDED.embedding,
+    det_score  = EXCLUDED.det_score,
+    updated_at = NOW()
+"""
+
 DELETE_MISSING_SQL = "DELETE FROM persons WHERE NOT (drive_file_id = ANY(%s))"
 DELETE_MISSING_STATUS_SQL = "DELETE FROM file_status WHERE NOT (drive_file_id = ANY(%s))"
+DELETE_MISSING_ALT_SQL = "DELETE FROM alt_embeddings WHERE NOT (drive_file_id = ANY(%s))"
+
+# Files enrolled in persons but missing this compare model's embedding —
+# the backfill worklist.
+ALT_MISSING_SQL = """
+SELECT p.drive_file_id FROM persons p
+LEFT JOIN alt_embeddings a ON a.drive_file_id = p.drive_file_id AND a.model = %s
+WHERE a.drive_file_id IS NULL
+ORDER BY p.id
+"""
 
 EXISTING_SQL = "SELECT drive_file_id, drive_modified_time FROM persons"
 
@@ -106,6 +125,7 @@ class _WriteBuffer:
     person_rows: list[tuple] = field(default_factory=list)
     status_rows: list[tuple] = field(default_factory=list)
     touch_ids: list[str] = field(default_factory=list)
+    alt_rows: list[tuple] = field(default_factory=list)
 
     def flush(self, cur) -> float:
         started = perf_counter()
@@ -118,6 +138,9 @@ class _WriteBuffer:
         if self.touch_ids:
             cur.executemany(TOUCH_STATUS_SQL, [(i,) for i in self.touch_ids])
             self.touch_ids.clear()
+        if self.alt_rows:
+            cur.executemany(ALT_UPSERT_SQL, self.alt_rows)
+            self.alt_rows.clear()
         return perf_counter() - started
 
 
@@ -293,6 +316,22 @@ def _acquired_or_recovered(name: str, prefix: str, job):
         yield None
 
 
+def _embed_compare_models(writes: _WriteBuffer, drive_file, image_bytes, log_pos: str) -> None:
+    """Dual enrollment: embed the file with every COMPARE_MODELS pack.
+
+    Best-effort — a compare model failing on a file never fails the primary
+    enrollment; that file just stays missing from the alt set (a backfill can
+    pick it up later)."""
+    for alt_model in settings.compare_models_list:
+        try:
+            alt = embed(image_bytes, profile="sync", model=alt_model)
+            writes.alt_rows.append((drive_file.id, alt_model, alt.embedding, alt.det_score))
+        except (NoFaceDetected, InvalidImage) as exc:
+            logger.info("%s [%s] skipped: %s", log_pos, alt_model, exc)
+        except Exception:
+            logger.exception("%s [%s] embed failed: %s", log_pos, alt_model, drive_file.name)
+
+
 # --- per-file pipeline (single, synchronous) -----------------------------
 
 def _process_one(
@@ -366,6 +405,7 @@ def _process_one(
             result.face_count,
         ),
     )
+    _embed_compare_models(writes, drive_file, download.image_bytes, log_pos)
     if is_new:
         stats.new += 1
         verb = "new"
@@ -435,6 +475,7 @@ def _prune_missing_rows(cur, seen: set[str]) -> tuple[int, int]:
     deleted_persons = cur.rowcount
     cur.execute(DELETE_MISSING_STATUS_SQL, (seen_ids,))
     deleted_status = cur.rowcount
+    cur.execute(DELETE_MISSING_ALT_SQL, (seen_ids,))
     return deleted_persons, deleted_status
 
 
@@ -618,3 +659,80 @@ def run_retry(file_ids: list[str]) -> SyncStats:
 def run_retry_job(file_ids: list[str]) -> dict:
     _ensure_pool_open()
     return run_retry(file_ids).__dict__
+
+
+BACKFILL_LOCK_NAME = "backfill"
+
+
+def run_model_backfill(model: str) -> SyncStats:
+    """Embed every enrolled photo with one compare model, alt-only.
+
+    Fills alt_embeddings for files persons already has but the compare model
+    doesn't — the initial catch-up after enabling COMPARE_MODELS. Regular
+    syncs keep both sets current afterwards; this never touches persons.
+    """
+    stats = SyncStats()
+    started = datetime.now(timezone.utc)
+    prefix = f"[backfill:{model} {_job_label()}]"
+    job = _current_job()
+
+    if model not in settings.compare_models_list:
+        logger.error("%s not in COMPARE_MODELS; refusing", prefix)
+        return stats
+
+    with _acquired_or_recovered(BACKFILL_LOCK_NAME, prefix, job) as token:
+        if token is None:
+            return stats
+        try:
+            with pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(ALT_MISSING_SQL, (model,))
+                file_ids = [row[0] for row in cur.fetchall()]
+                total = len(file_ids)
+                stats.listed = total
+                logger.info("%s starting: %d file(s) missing this model", prefix, total)
+                _write_progress(job, stats, 0, total)
+
+                writes = _WriteBuffer()
+                for idx, file_id in enumerate(file_ids, start=1):
+                    download = _download_timed(file_id)
+                    stats.download_seconds += download.elapsed_seconds
+                    if download.error is not None:
+                        stats.skipped_drive_error += 1
+                        logger.warning("%s [%d/%d] drive error: %s", prefix, idx, total, download.error)
+                    else:
+                        embed_started = perf_counter()
+                        try:
+                            alt = embed(download.image_bytes, profile="sync", model=model)
+                            writes.alt_rows.append((file_id, model, alt.embedding, alt.det_score))
+                            stats.new += 1
+                        except NoFaceDetected:
+                            stats.skipped_no_face += 1
+                        except InvalidImage:
+                            stats.skipped_invalid += 1
+                        except Exception:
+                            stats.skipped_invalid += 1
+                            logger.exception("%s [%d/%d] embed failed: %s", prefix, idx, total, file_id)
+                        finally:
+                            stats.embed_seconds += perf_counter() - embed_started
+                    if stats.new % settings.sync_batch_commit == 0 and stats.new > 0:
+                        _flush_writes(cur, writes, stats)
+                        conn.commit()
+                    if idx % PROGRESS_WRITE_EVERY == 0 or idx == total:
+                        _write_progress(job, stats, idx, total)
+                _flush_writes(cur, writes, stats)
+                conn.commit()
+        finally:
+            clear_active_sync()
+
+    stats.duration_seconds = (datetime.now(timezone.utc) - started).total_seconds()
+    logger.info(
+        "%s done in %.1fs — embedded=%d of %d · no_face=%d invalid=%d drive_error=%d",
+        prefix, stats.duration_seconds, stats.new, stats.listed,
+        stats.skipped_no_face, stats.skipped_invalid, stats.skipped_drive_error,
+    )
+    return stats
+
+
+def run_model_backfill_job(model: str) -> dict:
+    _ensure_pool_open()
+    return run_model_backfill(model).__dict__

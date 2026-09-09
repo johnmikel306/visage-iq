@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     gdrive_recursive: bool = True
 
     insightface_model: str = "buffalo_l"
+    # Comma-separated extra model packs enrolled ALONGSIDE the primary for
+    # side-by-side comparison (e.g. "antelopev2"). Each compare model gets its
+    # own embeddings in alt_embeddings (spaces are incompatible across packs),
+    # written during sync and searchable via /match?model=<name>. Empty = off.
+    compare_models: str = ""
     det_size: int = 640
     onnx_providers: str = "CPUExecutionProvider"
     # Comma-separated InsightFace sub-modules to load. Defaults to detection +
@@ -65,6 +70,20 @@ class Settings(BaseSettings):
     # --- auth (Clerk) + audit ---
     clerk_secret_key: str = ""           # empty = auth disabled (dev mode)
     allowed_email_domain: str = "miva.university"
+
+    @property
+    def compare_models_list(self) -> list[str]:
+        primary = self.insightface_model
+        out = []
+        for m in self.compare_models.split(","):
+            name = m.strip()
+            if name and name != primary and name not in out:
+                out.append(name)
+        return out
+
+    @property
+    def available_models(self) -> list[str]:
+        return [self.insightface_model, *self.compare_models_list]
 
     @property
     def providers_list(self) -> list[str]:

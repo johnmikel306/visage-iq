@@ -93,8 +93,9 @@ class MultiEmbeddingResult:
     rotation: int
 
 
-_app: FaceAnalysis | None = None
-_sync_app: FaceAnalysis | None = None
+# One FaceAnalysis per (profile, model pack). The primary model loads at api
+# startup; compare-model packs load lazily on first use (each holds ~500 MB).
+_apps: dict[tuple[str, str], FaceAnalysis] = {}
 
 ROTATIONS = (0, 90, 180, 270)
 
@@ -134,28 +135,31 @@ def _load_app(
     return app
 
 
-def get_app(profile: str = "match") -> FaceAnalysis:
-    global _app, _sync_app
+def get_app(profile: str = "match", model: str | None = None) -> FaceAnalysis:
     if profile == "sync":
-        if _sync_app is None:
-            _sync_app = _load_app(
+        name = model or settings.sync_insightface_model_value
+        key = ("sync", name)
+        if key not in _apps:
+            _apps[key] = _load_app(
                 profile="sync",
-                model_name=settings.sync_insightface_model_value,
+                model_name=name,
                 modules=settings.sync_insightface_modules_list,
                 det_size=settings.sync_det_size_value,
                 providers=settings.sync_providers_list,
             )
-        return _sync_app
+        return _apps[key]
 
-    if _app is None:
-        _app = _load_app(
+    name = model or settings.insightface_model
+    key = ("match", name)
+    if key not in _apps:
+        _apps[key] = _load_app(
             profile="match",
-            model_name=settings.insightface_model,
+            model_name=name,
             modules=settings.insightface_modules_list,
             det_size=settings.det_size,
             providers=settings.providers_list,
         )
-    return _app
+    return _apps[key]
 
 
 def _decode(image_bytes: bytes) -> np.ndarray:
@@ -206,16 +210,18 @@ def _largest(faces):
     return max(faces, key=area)
 
 
-def embed(image_bytes: bytes, profile: str = "match") -> EmbeddingResult:
+def embed(image_bytes: bytes, profile: str = "match", model: str | None = None) -> EmbeddingResult:
     """Detect + embed the largest face, trying 0/90/180/270 rotations.
 
     The rotation that produces the highest-confidence detection is treated as
     canonical. Both ingestion (sync) and inference (/match) call this, so a
     photo enrolled at rotation R is queried at rotation R later — cosine
     self-similarity for the same photo is preserved.
+
+    `model` overrides the profile's configured model pack (compare models).
     """
     base = _decode(image_bytes)
-    app = get_app(profile)
+    app = get_app(profile, model)
     best: tuple[float, int, object, int] | None = None  # (score, deg, face, n_faces)
     if profile == "sync":
         early_exit = settings.sync_rotation_early_exit_score_value
@@ -272,7 +278,9 @@ def embed(image_bytes: bytes, profile: str = "match") -> EmbeddingResult:
     )
 
 
-def embed_many(image_bytes: bytes, profile: str = "match") -> MultiEmbeddingResult:
+def embed_many(
+    image_bytes: bytes, profile: str = "match", model: str | None = None
+) -> MultiEmbeddingResult:
     """Detect + embed all faces from one chosen rotation.
 
     We keep rotation semantics aligned with the single-face path: try the same
@@ -280,7 +288,7 @@ def embed_many(image_bytes: bytes, profile: str = "match") -> MultiEmbeddingResu
     preserving the per-face embeddings/bboxes.
     """
     base = _decode(image_bytes)
-    app = get_app(profile)
+    app = get_app(profile, model)
     if profile == "sync":
         early_exit = settings.sync_rotation_early_exit_score_value
         mode = (settings.sync_rotation_mode_value or "fallback").lower()

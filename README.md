@@ -242,13 +242,14 @@ All configuration lives in `.env` (local) or service environment variables (Rend
 | `GDRIVE_FOLDER_ID` | *(required)* | Drive folder shared with the service account |
 | `GDRIVE_SA_JSON` | *(required)* | Raw JSON contents of the service-account key |
 | `GDRIVE_RECURSIVE` | `true` | Walk subfolders during sync |
-| `INSIGHTFACE_MODEL` | `buffalo_l` | Try `antelopev2` for a fairness A/B |
+| `INSIGHTFACE_MODEL` | `buffalo_l` | Primary embedding model pack |
+| `COMPARE_MODELS` | *(empty)* | Comma list of extra packs (e.g. `antelopev2`) enrolled alongside the primary for side-by-side comparison. Each pack gets its own `alt_embeddings` rows + HNSW index; searches pick a pack via `/match?model=`. Backfill existing photos with `POST /models/backfill?model=<name>`. |
 | `ROTATION_MODE` | `fallback` | One of `off` / `fallback` / `always`. **`off`**: only 0° is tried (fastest; tilted photos skipped). **`fallback`** *(recommended)*: try 0° first, only try 90°/180°/270° if 0° found no face. **`always`**: iterate all four, pick highest `det_score` (most robust, most expensive). |
 | `ROTATION_ENABLED` | `true` | Kill-switch. If `false`, forces `ROTATION_MODE=off` regardless of the value above. |
 | `ROTATION_EARLY_EXIT_SCORE` | `0.85` | Used only when `ROTATION_MODE=always`: short-circuit the loop as soon as a rotation produces ≥ this `det_score`. Set `1.0` to always try all four. |
-| `MATCH_THRESHOLD` | `0.40` | Cosine similarity floor for `MATCH` verdict |
-| `REVIEW_THRESHOLD` | `0.30` | Floor for `REVIEW` (below → `NO_MATCH`) |
-| `TOP_K` | `3` | Default candidates returned by `/match` |
+| `MATCH_THRESHOLD` | `0.40` | Cosine similarity floor for `MATCH` verdict. Default only — the UI dials write live overrides to Redis via `PATCH /config`, which win over this value. |
+| `REVIEW_THRESHOLD` | `0.30` | Floor for `REVIEW` (below → `NO_MATCH`). Same Redis-override rule as above. |
+| `TOP_K` | `3` | Default candidates returned by `/match`. Same Redis-override rule as above. |
 | `SYNC_INTERVAL_MIN` | `30` | Scheduler period in the api container; `0` to disable |
 | `IMAGE_CACHE_TTL_SECONDS` | `86400` | Redis TTL for cached Drive image bytes |
 | `MATCH_RATE_LIMIT` | `30/minute` | Per-IP slowapi limit on `/match` |
@@ -370,7 +371,10 @@ requirements.txt
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/health` | DB + Redis liveness, model name, `enrolled_count`, `drive_total`, `last_sync_finished_at`, `active_sync_job_id` |
-| `POST` | `/match` | Upload an image, get top-K candidates with `query_rotation` + `enrolled_count` |
+| `POST` | `/match` | Upload an image, get top-K candidates with `query_rotation` + `enrolled_count`. `?model=` searches a compare pack's embedding set. |
+| `GET` | `/config` | Shared dial values (`match_threshold`, `review_threshold`, `top_k`) + available models with per-model enrolled counts. UIs initialize their dials from this. |
+| `PATCH` | `/config` | Write dial values back (Redis) so the API's verdicts and every client agree. Validates `review < match`. |
+| `POST` | `/models/backfill` | `?model=<compare pack>` — embed every enrolled photo with that pack (fills `alt_embeddings`; never touches `persons`). Initial catch-up after adding a pack to `COMPARE_MODELS`. |
 | `POST` | `/sync` | Enqueue a Drive→DB sync job |
 | `GET` | `/sync/{job_id}` | Poll a sync job's status — includes live `progress` (`phase`/`current`/`total`/counters; `phase=skipped` when lock-blocked) |
 | `POST` | `/sync/force-unlock` | Manual override: clears `lock:sync` + `lock:retry` + `sync:active_job_id`. Rarely needed — locks use a short TTL + heartbeat and the next sync auto-recovers a dead holder within ~2 min. Rate-limited 5/min. |

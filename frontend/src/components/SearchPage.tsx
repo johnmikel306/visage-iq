@@ -6,7 +6,7 @@ import { formatNumber } from "../format";
 
 const FETCH_TOP_K = 20;
 
-export default function SearchPage({ cfg }: { cfg: Cfg }) {
+export default function SearchPage({ cfg, model }: { cfg: Cfg; model: string }) {
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadUrl, setUploadUrl] = useState("");
   const [matchData, setMatchData] = useState<MatchResponse | null>(null);
@@ -82,7 +82,8 @@ export default function SearchPage({ cfg }: { cfg: Cfg }) {
     const form = new FormData();
     form.append("file", uploadFile, uploadFile.name);
     try {
-      const data = await apiRequest<MatchResponse>(`/match-many?top_k=${FETCH_TOP_K}`, {
+      const modelParam = model ? `&model=${encodeURIComponent(model)}` : "";
+      const data = await apiRequest<MatchResponse>(`/match-many?top_k=${FETCH_TOP_K}${modelParam}`, {
         method: "POST",
         body: form,
       });
@@ -110,6 +111,14 @@ export default function SearchPage({ cfg }: { cfg: Cfg }) {
       runMatch();
     }
   }, [uploadFile]);
+
+  // Switching the model re-runs the current query against the other
+  // embedding set — the point of the model dial is side-by-side comparison.
+  useEffect(() => {
+    if (uploadFile && matchData && matchData.model && matchData.model !== model) {
+      runMatch();
+    }
+  }, [model]);
 
   // Draw the uploaded image (rotated the way the API saw it) plus the
   // selected face's bounding box. Runs after every match / face change.
@@ -283,6 +292,12 @@ export default function SearchPage({ cfg }: { cfg: Cfg }) {
                     ) : null}
                     <dt>Searched</dt>
                     <dd>{formatNumber(matchData.enrolled_count)} enrolled photos</dd>
+                    {matchData.model && (
+                      <>
+                        <dt>Model</dt>
+                        <dd>{matchData.model}</dd>
+                      </>
+                    )}
                   </dl>
                 )}
                 {dropzone("Drop a replacement image")}

@@ -18,6 +18,20 @@ CREATE INDEX IF NOT EXISTS persons_embedding_hnsw
 CREATE INDEX IF NOT EXISTS persons_modified_idx
     ON persons (drive_modified_time);
 
+-- Compare-model embeddings (dual enrollment). The primary model's vectors
+-- live in persons.face_embedding; each COMPARE_MODELS pack gets its own rows
+-- here — embedding spaces are incompatible across packs, so they are never
+-- mixed in one column. Per-model partial HNSW indexes are created at
+-- bootstrap (backend/db.py) because the model names come from env config.
+CREATE TABLE IF NOT EXISTS alt_embeddings (
+    drive_file_id TEXT NOT NULL,
+    model         TEXT NOT NULL,
+    embedding     vector(512) NOT NULL,
+    det_score     REAL,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (drive_file_id, model)
+);
+
 -- Per-file sync outcome log. One row per Drive file (latest-state).
 -- Drives the analytics page: counts by outcome, by extension, skipped-file browser.
 CREATE TABLE IF NOT EXISTS file_status (

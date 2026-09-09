@@ -39,6 +39,17 @@ def enqueue_retry(file_ids: list[str]) -> str:
     return job.id
 
 
+def enqueue_model_backfill(model: str) -> str:
+    # A CPU backfill of a large folder runs for many hours — give it room.
+    job = get_queue().enqueue(
+        "backend.sync.run_model_backfill_job",
+        model,
+        job_timeout=12 * 60 * 60,
+    )
+    set_active_sync(job.id)
+    return job.id
+
+
 def enqueue_students_sync() -> str:
     job = get_queue().enqueue(
         "backend.students_sync.run_students_sync_job",

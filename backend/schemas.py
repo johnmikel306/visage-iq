@@ -27,6 +27,7 @@ class MatchResponse(BaseModel):
     query_det_score: float
     query_rotation: int
     enrolled_count: int
+    model: str
     candidates: list[Candidate]
 
 
@@ -41,7 +42,28 @@ class MatchManyResponse(BaseModel):
     query_face_count: int
     query_rotation: int
     enrolled_count: int
+    model: str
     faces: list[FaceMatchResult]
+
+
+class ModelInfo(BaseModel):
+    name: str
+    primary: bool
+    enrolled_count: int
+
+
+class ConfigResponse(BaseModel):
+    match_threshold: float
+    review_threshold: float
+    top_k: int
+    model: str  # primary embedding model
+    models: list[ModelInfo]
+
+
+class ConfigUpdate(BaseModel):
+    match_threshold: float | None = Field(default=None, ge=0.05, le=0.98)
+    review_threshold: float | None = Field(default=None, ge=0.01, le=0.95)
+    top_k: int | None = Field(default=None, ge=1, le=50)
 
 
 class HealthResponse(BaseModel):

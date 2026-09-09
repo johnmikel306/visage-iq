@@ -124,6 +124,48 @@ def lock_with_heartbeat(name: str, ttl: int = 120, refresh_every: int = 60):
         _release_if_owner(name, token)
 
 
+# --- Runtime config (thresholds shared by every client and the API) ---
+#
+# Dial values written from the UIs via PATCH /config. Stored in Redis so all
+# api replicas and every client agree; .env values remain the defaults when a
+# field has never been set.
+
+RUNTIME_CONFIG_KEY = "config:runtime"
+_RUNTIME_FLOAT_FIELDS = ("match_threshold", "review_threshold")
+_RUNTIME_INT_FIELDS = ("top_k",)
+
+
+def get_runtime_config() -> dict:
+    """Return the stored overrides ({} on any Redis error — callers fall back
+    to the .env defaults, so a Redis blip never breaks /match)."""
+    try:
+        raw = get_redis().hgetall(RUNTIME_CONFIG_KEY)
+    except redis.RedisError:
+        logger.debug("runtime config read failed", exc_info=True)
+        return {}
+    out: dict = {}
+    for key, val in raw.items():
+        if isinstance(key, (bytes, bytearray)):
+            key = key.decode("utf-8", errors="ignore")
+        if isinstance(val, (bytes, bytearray)):
+            val = val.decode("utf-8", errors="ignore")
+        try:
+            if key in _RUNTIME_FLOAT_FIELDS:
+                out[key] = float(val)
+            elif key in _RUNTIME_INT_FIELDS:
+                out[key] = int(float(val))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def set_runtime_config(updates: dict) -> None:
+    allowed = _RUNTIME_FLOAT_FIELDS + _RUNTIME_INT_FIELDS
+    clean = {k: str(v) for k, v in updates.items() if k in allowed and v is not None}
+    if clean:
+        get_redis().hset(RUNTIME_CONFIG_KEY, mapping=clean)
+
+
 # --- Drive-folder stats (set by sync, read by /health) ---
 
 DRIVE_TOTAL_KEY = "drive:total"

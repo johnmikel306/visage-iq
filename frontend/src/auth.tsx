@@ -7,12 +7,15 @@ import {
   SignIn,
   SignedIn,
   SignedOut,
+  UserButton,
   useAuth,
+  useClerk,
   useUser,
 } from "@clerk/clerk-react";
-import { createContext, useContext, useEffect, useRef, type ReactNode } from "react";
+import { dark } from "@clerk/themes";
+import { useEffect, useRef, type ReactNode } from "react";
 import { setAuthTokenGetter } from "./api";
-import { VqLoader, VqLockup, VqMark } from "./ds";
+import { Icon, VqLoader, VqLockup, VqMark } from "./ds";
 
 const HANDOFF_MSGS = [
   "Loading the enrolment index…",
@@ -24,16 +27,8 @@ const HANDOFF_MSGS = [
 
 export const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
 
-interface AuthInfo {
-  email: string | null;
-  signOut: (() => void) | null;
-}
-const AuthCtx = createContext<AuthInfo>({ email: null, signOut: null });
-export const useAuthInfo = () => useContext(AuthCtx);
-
 function TokenBridge({ children }: { children: ReactNode }) {
-  const { getToken, signOut } = useAuth();
-  const { user } = useUser();
+  const { getToken } = useAuth();
   // Register DURING render, not in an effect: child effects run before parent
   // effects, so App's mount-time fetches would otherwise fire tokenless. The
   // ref keeps the getter current without re-registering machinery.
@@ -41,18 +36,12 @@ function TokenBridge({ children }: { children: ReactNode }) {
   getTokenRef.current = getToken;
   setAuthTokenGetter(() => getTokenRef.current());
   useEffect(() => () => setAuthTokenGetter(null), []);
-  return (
-    <AuthCtx.Provider
-      value={{ email: user?.primaryEmailAddress?.emailAddress ?? null, signOut: () => { void signOut(); } }}
-    >
-      {children}
-    </AuthCtx.Provider>
-  );
+  return <>{children}</>;
 }
 
-/* B2B: the Miva Open University org uses verified-domain automatic invitation —
-   the "Join" accept button lives in this switcher. Renders nothing in no-auth
-   dev mode (outside ClerkProvider the component would throw). */
+/* B2B: Miva Open University org, manual invitations — invited users accept via
+   this switcher or the email link. Renders nothing in no-auth dev mode (outside
+   ClerkProvider the component would throw). */
 export function OrgControl() {
   if (!PUBLISHABLE_KEY) return null;
   return (
@@ -64,6 +53,45 @@ export function OrgControl() {
         },
       }}
     />
+  );
+}
+
+/* Sidebar-footer user chip: Clerk's UserButton (avatar → menu → full profile
+   modal) plus the display name. Sign-out lives in the dropdown. Org admins get
+   an extra "Manage organization" action — the RBAC hook until proper roles land. */
+export function UserControl({ isDark }: { isDark: boolean }) {
+  if (!PUBLISHABLE_KEY) return null;
+  return <UserChip isDark={isDark} />;
+}
+
+function UserChip({ isDark }: { isDark: boolean }) {
+  const { user } = useUser();
+  const { orgRole } = useAuth();
+  const clerk = useClerk();
+  // v5 parses variable colors, so resolve the palette token to a real value.
+  const focus = getComputedStyle(document.documentElement).getPropertyValue("--focus").trim();
+  const appearance = {
+    baseTheme: isDark ? dark : undefined,
+    variables: { colorPrimary: focus, fontFamily: "var(--font-body)" },
+  };
+  const email = user?.primaryEmailAddress?.emailAddress ?? "";
+  return (
+    <div className="row" style={{ gap: "var(--s-2)", flexWrap: "nowrap" }}>
+      <UserButton appearance={appearance} userProfileProps={{ appearance }}>
+        {orgRole === "org:admin" && (
+          <UserButton.MenuItems>
+            <UserButton.Action
+              label="Manage organization"
+              labelIcon={<Icon name="shield" size={14} />}
+              onClick={() => clerk.openOrganizationProfile({ appearance })}
+            />
+          </UserButton.MenuItems>
+        )}
+      </UserButton>
+      <span className="side-meta hide-collapsed" title={email}>
+        {user?.fullName || email}
+      </span>
+    </div>
   );
 }
 

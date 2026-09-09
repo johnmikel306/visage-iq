@@ -48,6 +48,21 @@ export interface Health {
   model?: string;
 }
 
+export interface ModelInfo {
+  name: string;
+  primary: boolean;
+  enrolled_count: number;
+}
+
+// GET/PATCH /config — dial values shared by every client and the API itself.
+export interface AppConfig {
+  match_threshold: number;
+  review_threshold: number;
+  top_k: number;
+  model: string;
+  models: ModelInfo[];
+}
+
 export interface WorkerStatus {
   suspended: boolean;
 }
@@ -90,6 +105,7 @@ export interface MatchResponse {
   query_face_count: number;
   query_rotation?: number;
   enrolled_count: number;
+  model?: string;
 }
 
 export interface AnalyticsSummary {

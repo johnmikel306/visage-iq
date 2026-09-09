@@ -9,6 +9,8 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from psycopg import sql as pgsql
+
 from backend.cache import (
     clear_active_sync,
     get_active_sync,
@@ -16,8 +18,10 @@ from backend.cache import (
     get_image,
     get_last_sync_finished_at,
     get_redis,
+    get_runtime_config,
     get_students_sync_summary,
     set_image,
+    set_runtime_config,
     unlock,
 )
 from backend.config import settings
@@ -32,13 +36,22 @@ from backend.embedding import (
     to_display_jpeg,
 )
 from backend.gdrive import DriveError, download_bytes, get_metadata
-from backend.queue import enqueue_retry, enqueue_students_sync, enqueue_sync, fetch_job
+from backend.queue import (
+    enqueue_model_backfill,
+    enqueue_retry,
+    enqueue_students_sync,
+    enqueue_sync,
+    fetch_job,
+)
 from backend import analytics, audit, scoring, students
 from backend.auth import actor_of, clerk_middleware
 from backend.schemas import (
     AnalyticsSummary,
     AuditPage,
     Candidate,
+    ConfigResponse,
+    ConfigUpdate,
+    ModelInfo,
     FileStatusPage,
     FaceMatchResult,
     HealthResponse,
@@ -102,18 +115,45 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.middleware("http")(clerk_middleware)
 
 
-def _verdict(similarity: float) -> Verdict:
-    if similarity >= settings.match_threshold:
+def _effective_config() -> tuple[float, float, int]:
+    """(match_threshold, review_threshold, top_k) — Redis dial overrides when
+    set (PATCH /config), .env defaults otherwise. Redis errors fall back."""
+    overrides = get_runtime_config()
+    match_t = float(overrides.get("match_threshold", settings.match_threshold))
+    review_t = float(overrides.get("review_threshold", settings.review_threshold))
+    top_k = int(overrides.get("top_k", settings.top_k))
+    if review_t >= match_t:  # defensive — PATCH validates, but Redis is writable
+        review_t = max(0.01, match_t - 0.01)
+    return match_t, review_t, top_k
+
+
+def _verdict(similarity: float, match_t: float, review_t: float) -> Verdict:
+    if similarity >= match_t:
         return "MATCH"
-    if similarity >= settings.review_threshold:
+    if similarity >= review_t:
         return "REVIEW"
     return "NO_MATCH"
 
 
-def _enrolled_count() -> int:
+def _resolve_model(model: str | None) -> str:
+    """Validate a ?model= query value against the configured packs."""
+    if not model:
+        return settings.insightface_model
+    if model not in settings.available_models:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown model '{model}'. Available: {', '.join(settings.available_models)}",
+        )
+    return model
+
+
+def _enrolled_count(model: str | None = None) -> int:
     try:
         with pool.connection() as conn, conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM persons")
+            if model is None or model == settings.insightface_model:
+                cur.execute("SELECT COUNT(*) FROM persons")
+            else:
+                cur.execute("SELECT COUNT(*) FROM alt_embeddings WHERE model = %s", (model,))
             row = cur.fetchone()
             return int(row[0]) if row else 0
     except Exception:
@@ -121,21 +161,47 @@ def _enrolled_count() -> int:
         return 0
 
 
-def _search(result: EmbeddingResult, top_k: int) -> list[Candidate]:
-    sql = (
-        "SELECT p.drive_file_id, p.drive_file_name, "
-        "       1 - (p.face_embedding <=> %s) AS similarity, "
-        "       s.full_name, s.matric, s.student_id, s.programme "
-        "FROM persons p "
-        "LEFT JOIN LATERAL (SELECT full_name, matric, student_id, programme "
-        "                   FROM students st WHERE st.photo_drive_file_id = p.drive_file_id "
-        "                   ORDER BY st.row_ts DESC NULLS LAST LIMIT 1) s ON TRUE "
-        "ORDER BY p.face_embedding <=> %s "
-        "LIMIT %s"
-    )
+_STUDENT_JOIN = (
+    "LEFT JOIN LATERAL (SELECT full_name, matric, student_id, programme "
+    "                   FROM students st WHERE st.photo_drive_file_id = p.drive_file_id "
+    "                   ORDER BY st.row_ts DESC NULLS LAST LIMIT 1) s ON TRUE "
+)
+
+_PRIMARY_SEARCH_SQL = (
+    "SELECT p.drive_file_id, p.drive_file_name, "
+    "       1 - (p.face_embedding <=> %s) AS similarity, "
+    "       s.full_name, s.matric, s.student_id, s.programme "
+    "FROM persons p "
+    + _STUDENT_JOIN +
+    "ORDER BY p.face_embedding <=> %s "
+    "LIMIT %s"
+)
+
+# Compare-model search. The model name is inlined as a literal (validated
+# against the COMPARE_MODELS allowlist first) so the planner can match the
+# per-model partial HNSW index — a bind parameter would force a full scan.
+_ALT_SEARCH_SQL = pgsql.SQL(
+    "SELECT p.drive_file_id, p.drive_file_name, "
+    "       1 - (a.embedding <=> %s) AS similarity, "
+    "       s.full_name, s.matric, s.student_id, s.programme "
+    "FROM alt_embeddings a "
+    "JOIN persons p ON p.drive_file_id = a.drive_file_id "
+    + _STUDENT_JOIN +
+    "WHERE a.model = {} "
+    "ORDER BY a.embedding <=> %s "
+    "LIMIT %s"
+)
+
+
+def _search(
+    result: EmbeddingResult, top_k: int, model: str, match_t: float, review_t: float
+) -> list[Candidate]:
     emb = result.embedding
     with pool.connection() as conn, conn.cursor() as cur:
-        cur.execute(sql, (emb, emb, top_k))
+        if model == settings.insightface_model:
+            cur.execute(_PRIMARY_SEARCH_SQL, (emb, emb, top_k))
+        else:
+            cur.execute(_ALT_SEARCH_SQL.format(pgsql.Literal(model)), (emb, emb, top_k))
         rows = cur.fetchall()
     out: list[Candidate] = []
     for file_id, title, sim, s_name, s_matric, s_sid, s_prog in rows:
@@ -145,10 +211,8 @@ def _search(result: EmbeddingResult, top_k: int) -> list[Candidate]:
                 drive_file_id=file_id,
                 title=title,
                 similarity=sim_f,
-                confidence_pct=scoring.confidence_pct(
-                    sim_f, settings.review_threshold, settings.match_threshold
-                ),
-                verdict=_verdict(sim_f),
+                confidence_pct=scoring.confidence_pct(sim_f, review_t, match_t),
+                verdict=_verdict(sim_f, match_t, review_t),
                 student=StudentRef(
                     full_name=s_name, matric=s_matric, student_id=s_sid, programme=s_prog
                 ) if s_name else None,
@@ -204,23 +268,26 @@ async def match(
     request: Request,
     file: UploadFile = File(...),
     top_k: int = Query(default=settings.top_k, ge=1, le=50),
+    model: str | None = Query(default=None),
 ) -> MatchResponse:
     image_bytes = await file.read()
     if not image_bytes:
         raise HTTPException(status_code=400, detail="Empty file")
+    model_name = _resolve_model(model)
+    match_t, review_t, _ = _effective_config()
 
     try:
-        result = embed(image_bytes)
+        result = embed(image_bytes, model=model_name)
     except NoFaceDetected as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except InvalidImage as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    candidates = _search(result, top_k)
+    candidates = _search(result, top_k, model_name, match_t, review_t)
     audit.record(
         actor_of(request), "face_search",
         target=candidates[0].drive_file_id if candidates else None,
-        details={"faces": result.face_count,
+        details={"faces": result.face_count, "model": model_name,
                  "top_similarity": candidates[0].similarity if candidates else None},
     )
     return MatchResponse(
@@ -228,7 +295,8 @@ async def match(
         query_face_count=result.face_count,
         query_det_score=result.det_score,
         query_rotation=result.rotation,
-        enrolled_count=_enrolled_count(),
+        enrolled_count=_enrolled_count(model_name),
+        model=model_name,
         candidates=candidates,
     )
 
@@ -239,13 +307,16 @@ async def match_many(
     request: Request,
     file: UploadFile = File(...),
     top_k: int = Query(default=settings.top_k, ge=1, le=50),
+    model: str | None = Query(default=None),
 ) -> MatchManyResponse:
     image_bytes = await file.read()
     if not image_bytes:
         raise HTTPException(status_code=400, detail="Empty file")
+    model_name = _resolve_model(model)
+    match_t, review_t, _ = _effective_config()
 
     try:
-        result = embed_many(image_bytes)
+        result = embed_many(image_bytes, model=model_name)
     except NoFaceDetected as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except InvalidImage as exc:
@@ -256,7 +327,7 @@ async def match_many(
             face_index=idx,
             bbox=face.bbox,
             det_score=face.det_score,
-            candidates=_search(face, top_k),
+            candidates=_search(face, top_k, model_name, match_t, review_t),
         )
         for idx, face in enumerate(result.faces)
     ]
@@ -266,14 +337,83 @@ async def match_many(
     audit.record(
         actor_of(request), "face_search",
         target=top.drive_file_id if top else None,
-        details={"faces": len(faces), "top_similarity": top.similarity if top else None},
+        details={"faces": len(faces), "model": model_name,
+                 "top_similarity": top.similarity if top else None},
     )
     return MatchManyResponse(
         query_face_count=len(result.faces),
         query_rotation=result.rotation,
-        enrolled_count=_enrolled_count(),
+        enrolled_count=_enrolled_count(model_name),
+        model=model_name,
         faces=faces,
     )
+
+
+def _config_response() -> ConfigResponse:
+    match_t, review_t, top_k = _effective_config()
+    return ConfigResponse(
+        match_threshold=match_t,
+        review_threshold=review_t,
+        top_k=top_k,
+        model=settings.insightface_model,
+        models=[
+            ModelInfo(
+                name=name,
+                primary=name == settings.insightface_model,
+                enrolled_count=_enrolled_count(name),
+            )
+            for name in settings.available_models
+        ],
+    )
+
+
+@app.get("/config", response_model=ConfigResponse)
+def read_config() -> ConfigResponse:
+    """Shared dial values + available models. UIs initialize from this."""
+    return _config_response()
+
+
+@app.patch("/config", response_model=ConfigResponse)
+@limiter.limit("30/minute")
+def update_config(request: Request, body: ConfigUpdate) -> ConfigResponse:
+    """Write dial values back so every client and the API itself agree."""
+    match_t, review_t, top_k = _effective_config()
+    new_match = body.match_threshold if body.match_threshold is not None else match_t
+    new_review = body.review_threshold if body.review_threshold is not None else review_t
+    if new_review >= new_match:
+        raise HTTPException(
+            status_code=422,
+            detail=f"review_threshold ({new_review}) must be below match_threshold ({new_match})",
+        )
+    updates = {
+        "match_threshold": body.match_threshold,
+        "review_threshold": body.review_threshold,
+        "top_k": body.top_k,
+    }
+    provided = {k: v for k, v in updates.items() if v is not None}
+    if provided:
+        set_runtime_config(provided)
+        audit.record(actor_of(request), "config_updated", details=provided)
+    return _config_response()
+
+
+@app.post("/models/backfill", response_model=SyncEnqueueResponse)
+@limiter.limit(settings.sync_rate_limit)
+def trigger_model_backfill(request: Request, model: str = Query(...)) -> SyncEnqueueResponse:
+    """Embed every enrolled photo with a compare model (alt_embeddings only).
+
+    The initial catch-up after adding a model to COMPARE_MODELS; regular
+    syncs keep both embedding sets current afterwards.
+    """
+    if model not in settings.compare_models_list:
+        raise HTTPException(
+            status_code=422,
+            detail=f"'{model}' is not in COMPARE_MODELS "
+                   f"({', '.join(settings.compare_models_list) or 'none configured'})",
+        )
+    job_id = enqueue_model_backfill(model)
+    audit.record(actor_of(request), "model_backfill_triggered", target=job_id, details={"model": model})
+    return SyncEnqueueResponse(job_id=job_id)
 
 
 @app.post("/sync", response_model=SyncEnqueueResponse)

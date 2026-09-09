@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
-import { apiRequest, errorMessage, type Health, type SyncJob, type WorkerStatus } from "./api";
-import { OrgControl, useAuthInfo } from "./auth";
+import { useEffect, useRef, useState } from "react";
+import { apiRequest, errorMessage, type AppConfig, type Health, type SyncJob, type WorkerStatus } from "./api";
+import { OrgControl, UserControl } from "./auth";
 import AnalyticsPage from "./components/AnalyticsPage";
 import SearchPage from "./components/SearchPage";
 import SettingsPage from "./components/SettingsPage";
@@ -38,7 +38,6 @@ function loadCfg(): Cfg {
 }
 
 export default function App() {
-  const { email, signOut } = useAuthInfo();
   const [page, setPage] = useState<Tab>(() => {
     const saved = localStorage.getItem("visageiq-page");
     return NAV.some(([key]) => key === saved) ? (saved as Tab) : "search";
@@ -47,7 +46,11 @@ export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem("visageiq-theme") || "light");
   const [lightPalette, setLightPalette] = useState(() => localStorage.getItem("visageiq-lp") || "cool");
   const [darkPalette, setDarkPalette] = useState(() => localStorage.getItem("visageiq-dp") || "slate");
-  const [cfg, setCfg] = useState<Cfg>(loadCfg);
+  const [cfg, setCfgState] = useState<Cfg>(loadCfg);
+  const [config, setConfig] = useState<AppConfig | null>(null);
+  const [model, setModel] = useState(() => localStorage.getItem("visageiq-model") || "");
+  const dirtyRef = useRef(false); // local dial change not yet written back
+  const patchTimer = useRef(0);
   const [health, setHealth] = useState<Health | null>(null);
   const [healthError, setHealthError] = useState("");
   const [worker, setWorker] = useState<WorkerStatus | null>(null);
@@ -74,6 +77,59 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("visageiq-cfg", JSON.stringify(cfg));
   }, [cfg]);
+  useEffect(() => {
+    localStorage.setItem("visageiq-model", model);
+  }, [model]);
+
+  // Server config is the source of truth for the dials: adopt it unless a
+  // local change is still waiting to be written back.
+  function applyServerConfig(next: AppConfig) {
+    setConfig(next);
+    if (!dirtyRef.current) {
+      setCfgState((current) => {
+        const fromServer = { match: next.match_threshold, review: next.review_threshold, topK: next.top_k };
+        return current.match === fromServer.match &&
+          current.review === fromServer.review &&
+          current.topK === fromServer.topK
+          ? current
+          : fromServer;
+      });
+    }
+  }
+
+  async function loadConfig() {
+    try {
+      applyServerConfig(await apiRequest<AppConfig>("/config"));
+    } catch {
+      // API down — /health already reports it; keep the local dial values.
+    }
+  }
+
+  // Dial changes write back (debounced) so the API's verdicts and every
+  // other client use the same thresholds.
+  function setCfg(next: Cfg) {
+    dirtyRef.current = true;
+    setCfgState(next);
+    window.clearTimeout(patchTimer.current);
+    patchTimer.current = window.setTimeout(async () => {
+      try {
+        const saved = await apiRequest<AppConfig>("/config", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            match_threshold: next.match,
+            review_threshold: next.review,
+            top_k: next.topK,
+          }),
+        });
+        dirtyRef.current = false;
+        applyServerConfig(saved);
+      } catch (error) {
+        dirtyRef.current = false;
+        toast("error", "Couldn't save the thresholds", errorMessage(error));
+      }
+    }, 600);
+  }
 
   async function loadHealth() {
     try {
@@ -105,7 +161,7 @@ export default function App() {
   }
 
   async function refreshOps() {
-    await Promise.all([loadHealth(), loadWorker()]);
+    await Promise.all([loadHealth(), loadWorker(), loadConfig()]);
   }
 
   useEffect(() => {
@@ -153,6 +209,9 @@ export default function App() {
   }
 
   const dark = theme === "dark";
+  const models = config?.models || [];
+  // Per-operator pick; falls back to the primary when unset or no longer offered.
+  const activeModel = models.some((m) => m.name === model) ? model : config?.model || "";
   const workerRunning = worker ? !worker.suspended : false;
   const coverage = health?.drive_total
     ? ((health.enrolled_count / health.drive_total) * 100).toFixed(1) + "%"
@@ -183,6 +242,64 @@ export default function App() {
           ))}
         </nav>
         <div className="side-foot">
+          <div className="side-dials hide-collapsed">
+            <label>
+              <span className="side-meta">
+                Match <b>{(cfg.match * 100).toFixed(0)}%</b>
+              </span>
+              <input
+                type="range"
+                min={0.2}
+                max={0.95}
+                step={0.01}
+                value={cfg.match}
+                onChange={(e) =>
+                  setCfg({ ...cfg, match: Math.max(parseFloat(e.target.value), cfg.review + 0.01) })
+                }
+              />
+            </label>
+            <label>
+              <span className="side-meta">
+                Review <b>{(cfg.review * 100).toFixed(0)}%</b>
+              </span>
+              <input
+                type="range"
+                min={0.1}
+                max={0.9}
+                step={0.01}
+                value={cfg.review}
+                onChange={(e) =>
+                  setCfg({ ...cfg, review: Math.min(parseFloat(e.target.value), cfg.match - 0.01) })
+                }
+              />
+            </label>
+            <label>
+              <span className="side-meta">
+                Top K <b>{cfg.topK}</b>
+              </span>
+              <input
+                type="range"
+                min={1}
+                max={6}
+                step={1}
+                value={cfg.topK}
+                onChange={(e) => setCfg({ ...cfg, topK: parseInt(e.target.value, 10) })}
+              />
+            </label>
+            {models.length > 1 && (
+              <label>
+                <span className="side-meta">Model</span>
+                <select className="side-select" value={activeModel} onChange={(e) => setModel(e.target.value)}>
+                  {models.map((m) => (
+                    <option key={m.name} value={m.name}>
+                      {m.name}
+                      {m.primary ? "" : ` · ${formatNumber(m.enrolled_count)} enrolled`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
           <div className="row" style={{ gap: "var(--s-2)", flexWrap: "nowrap" }}>
             <button className="icon-btn on-dark" onClick={() => setCollapsed(!collapsed)} aria-label="Toggle sidebar">
               <Icon name="menu" size={16} />
@@ -199,22 +316,7 @@ export default function App() {
           <div className="hide-collapsed">
             <OrgControl />
           </div>
-          {email && (
-            <div className="side-meta hide-collapsed" title={email}>
-              {email}
-              {" · "}
-              <a
-                href="#signout"
-                style={{ color: "rgba(255,255,255,.7)" }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  signOut?.();
-                }}
-              >
-                Sign out
-              </a>
-            </div>
-          )}
+          <UserControl isDark={dark} />
         </div>
       </aside>
       <main className="main">
@@ -269,13 +371,16 @@ export default function App() {
             )}
           </div>
         </header>
-        {page === "search" && <SearchPage cfg={cfg} />}
+        {page === "search" && <SearchPage cfg={cfg} model={activeModel} />}
         {page === "students" && <StudentsPage onNav={setPage} />}
         {page === "analytics" && <AnalyticsPage activeSync={activeSync} onOpsChanged={refreshOps} />}
         {page === "settings" && (
           <SettingsPage
             cfg={cfg}
             setCfg={setCfg}
+            config={config}
+            model={activeModel}
+            setModel={setModel}
             theme={theme}
             setTheme={setTheme}
             lightPalette={lightPalette}

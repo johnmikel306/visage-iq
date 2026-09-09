@@ -131,11 +131,16 @@ def _fetch_health() -> dict | None:
     return None
 
 
-def _do_match_many(image_bytes: bytes, name: str, content_type: str | None, top_k: int):
+def _do_match_many(
+    image_bytes: bytes, name: str, content_type: str | None, top_k: int, model: str | None = None
+):
+    params: dict = {"top_k": top_k}
+    if model:
+        params["model"] = model
     return requests.post(
         f"{API_BASE_URL}/match-many",
         files={"file": (name, image_bytes, content_type or "image/jpeg")},
-        params={"top_k": top_k},
+        params=params,
         timeout=60,
     )
 
@@ -252,28 +257,81 @@ def _sync_section() -> None:
                 st.rerun()
 
 
-def _threshold_sliders() -> tuple[float, float]:
+def _fetch_config() -> dict | None:
+    try:
+        resp = requests.get(f"{API_BASE_URL}/config", timeout=5)
+        if resp.status_code == 200:
+            return resp.json()
+    except requests.RequestException:
+        pass
+    return None
+
+
+def _push_config() -> None:
+    """Write the dial values back so the API and every other client agree."""
+    match_t = float(st.session_state["dial_match"])
+    payload = {
+        "match_threshold": match_t,
+        "review_threshold": min(float(st.session_state["dial_review"]), match_t - 0.01),
+        "top_k": int(st.session_state["dial_topk"]),
+    }
+    try:
+        requests.patch(f"{API_BASE_URL}/config", json=payload, timeout=5)
+    except requests.RequestException:
+        pass  # API down — the sliders still drive the local rendering
+
+
+def _dials() -> tuple[float, float, int, str | None]:
+    """Sidebar dials — initialized from GET /config, written back on change.
+
+    Returns (match_t, review_t, top_k, model). model is None until the server
+    reports more than one available pack.
+    """
+    cfg = _fetch_config()
+    if "dial_match" not in st.session_state:
+        st.session_state["dial_match"] = float(cfg["match_threshold"]) if cfg else float(os.getenv("UI_DEFAULT_MATCH", "0.50"))
+        st.session_state["dial_review"] = float(cfg["review_threshold"]) if cfg else float(os.getenv("UI_DEFAULT_REVIEW", "0.40"))
+        st.session_state["dial_topk"] = int(cfg["top_k"]) if cfg else 3
+
     with st.sidebar:
         st.subheader("Thresholds")
-        match_t = st.slider(
+        st.caption("Saved to the server — the API and every client use these.")
+        st.slider(
             "Match floor (cosine similarity)",
-            min_value=0.0, max_value=1.0,
-            value=float(os.getenv("UI_DEFAULT_MATCH", "0.50")),
-            step=0.01,
+            min_value=0.0, max_value=1.0, step=0.01,
+            key="dial_match", on_change=_push_config,
             help="Similarity ≥ this → MATCH",
         )
-        review_max = max(0.01, match_t)
-        review_default = min(float(os.getenv("UI_DEFAULT_REVIEW", "0.40")), review_max)
-        review_t = st.slider(
+        st.slider(
             "Review floor (cosine similarity)",
-            min_value=0.0, max_value=review_max,
-            value=review_default, step=0.01,
+            min_value=0.0, max_value=1.0, step=0.01,
+            key="dial_review", on_change=_push_config,
             help="Similarity ≥ this but < match floor → REVIEW",
         )
-    return match_t, review_t
+        st.slider(
+            "Top K candidates", 1, FETCH_TOP_K,
+            key="dial_topk", on_change=_push_config,
+        )
+
+        model: str | None = None
+        models = (cfg or {}).get("models") or []
+        if len(models) > 1:
+            names = [m["name"] for m in models]
+            counts = {m["name"]: int(m.get("enrolled_count") or 0) for m in models}
+            model = st.selectbox(
+                "Model",
+                names,
+                key="dial_model",
+                format_func=lambda n: f"{n} · {counts.get(n, 0):,} enrolled",
+                help="Which embedding set to search — compare packs are enrolled separately.",
+            )
+
+    match_t = float(st.session_state["dial_match"])
+    review_t = min(float(st.session_state["dial_review"]), match_t)
+    return match_t, review_t, int(st.session_state["dial_topk"]), model
 
 
-def _run_match_and_cache() -> None:
+def _run_match_and_cache(model: str | None = None) -> None:
     with st.spinner("Detecting face and searching..."):
         try:
             resp = _do_match_many(
@@ -281,6 +339,7 @@ def _run_match_and_cache() -> None:
                 st.session_state["upload_name"],
                 st.session_state.get("upload_type"),
                 FETCH_TOP_K,
+                model,
             )
         except requests.RequestException as exc:
             st.error(f"Could not reach API at {API_BASE_URL}: {exc}")
@@ -310,8 +369,7 @@ def main() -> None:
     _sync_section()
     render_worker_panel()
     render_active_sync_panel()
-    match_t, review_t = _threshold_sliders()
-    top_k = st.sidebar.slider("Top K candidates", 1, FETCH_TOP_K, 3)
+    match_t, review_t, top_k, model = _dials()
     st.sidebar.write(f"API: `{API_BASE_URL}`")
 
     uploaded = st.file_uploader(
@@ -360,10 +418,13 @@ def main() -> None:
         st.info("Upload an image to search the database.")
         return
 
-    # Fetch from API only when we have no cached result, or when user clicks Search again.
-    needs_fetch = retry or st.session_state.get("match_response") is None
+    # Fetch from API when there's no cached result, the user clicks Search
+    # again, or the model dial changed (the other pack has its own index).
+    model_changed = st.session_state.get("match_model_used") != model
+    needs_fetch = retry or model_changed or st.session_state.get("match_response") is None
     if needs_fetch:
-        _run_match_and_cache()
+        _run_match_and_cache(model)
+        st.session_state["match_model_used"] = model
 
     data = st.session_state.get("match_response")
     if not data:
@@ -400,8 +461,9 @@ def main() -> None:
                 "Run a Drive sync from the sidebar first."
             )
         else:
+            model_note = f" · model `{data['model']}`" if data.get("model") else ""
             st.caption(
-                f"Searched against **{enrolled:,}** enrolled photo(s). "
+                f"Searched against **{enrolled:,}** enrolled photo(s){model_note}. "
                 f"Verdicts use the sliders: MATCH ≥ {match_t:.2f}, "
                 f"REVIEW ≥ {review_t:.2f}."
             )

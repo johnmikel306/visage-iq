@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
 import { DEFAULT_CFG, type Cfg } from "../App";
-import { apiRequest, errorMessage, type AuditRow, type Health, type SyncJob, type WorkerStatus } from "../api";
+import {
+  apiRequest,
+  errorMessage,
+  type AppConfig,
+  type AuditRow,
+  type Health,
+  type SyncJob,
+  type WorkerStatus,
+} from "../api";
 import { Button, Checkbox, Icon, Panel, SettingRow, Slider, toast } from "../ds";
 import { formatNumber, relativeTime } from "../format";
 
@@ -51,6 +59,9 @@ function PaletteCard({
 export default function SettingsPage({
   cfg,
   setCfg,
+  config,
+  model,
+  setModel,
   theme,
   setTheme,
   lightPalette,
@@ -66,6 +77,9 @@ export default function SettingsPage({
 }: {
   cfg: Cfg;
   setCfg: (cfg: Cfg) => void;
+  config: AppConfig | null;
+  model: string;
+  setModel: (model: string) => void;
   theme: string;
   setTheme: (theme: string) => void;
   lightPalette: string;
@@ -232,13 +246,67 @@ export default function SettingsPage({
           <section className="set-section" id="set-model">
             <Panel title="Model" meta="Embedding and detection">
               <SettingRow
-                title="Embedding model"
-                desc="Configured on the API server (EMBED_MODEL). Changing it there invalidates the index and requires a full re-embed."
+                title="Search model"
+                desc="Which embedding set your searches run against. Compare models are enrolled separately (embeddings from different packs are incompatible), so each needs its own index — add packs via COMPARE_MODELS on the API server."
               >
-                <span className="tag" style={{ fontSize: "var(--text-small)", padding: "6px 14px" }}>
-                  {health?.model || "unknown"}
-                </span>
+                {config && config.models.length > 1 ? (
+                  <select
+                    className="side-select"
+                    style={{ color: "var(--txt-1)", background: "var(--surface-1)", borderColor: "var(--line)", maxWidth: 320 }}
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                  >
+                    {config.models.map((m) => (
+                      <option key={m.name} value={m.name}>
+                        {m.name}
+                        {m.primary ? " (primary)" : ""} · {formatNumber(m.enrolled_count)} enrolled
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="tag" style={{ fontSize: "var(--text-small)", padding: "6px 14px" }}>
+                    {health?.model || "unknown"}
+                  </span>
+                )}
               </SettingRow>
+              {(config?.models || [])
+                .filter((m) => !m.primary)
+                .map((m) => {
+                  const primaryCount =
+                    config?.models.find((entry) => entry.primary)?.enrolled_count ?? 0;
+                  const missing = Math.max(0, primaryCount - m.enrolled_count);
+                  return (
+                    <SettingRow
+                      key={m.name}
+                      title={`Backfill ${m.name}`}
+                      desc={
+                        missing > 0
+                          ? `${formatNumber(missing)} enrolled photos have no ${m.name} embedding yet. Backfill embeds them without touching the primary index.`
+                          : `Fully enrolled — regular Drive syncs keep it current.`
+                      }
+                    >
+                      <Button
+                        kind="secondary"
+                        size="sm"
+                        disabled={missing === 0}
+                        iconLeft={<Icon name="refresh" size={16} />}
+                        onClick={() => {
+                          apiRequest<{ job_id: string }>(
+                            `/models/backfill?model=${encodeURIComponent(m.name)}`,
+                            { method: "POST" },
+                          )
+                            .then((body) =>
+                              toast("ok", "Backfill started",
+                                `Job ${body.job_id.slice(0, 8)} — progress shows in the topbar.`),
+                            )
+                            .catch((e) => toast("error", "Couldn't start the backfill", errorMessage(e)));
+                        }}
+                      >
+                        Backfill now
+                      </Button>
+                    </SettingRow>
+                  );
+                })}
             </Panel>
           </section>
 
